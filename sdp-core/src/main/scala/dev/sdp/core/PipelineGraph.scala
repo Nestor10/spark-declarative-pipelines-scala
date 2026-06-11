@@ -150,6 +150,13 @@ enum PipelineValidationError:
   case UnknownColumn(flowName: String, column: String, available: List[String])
   case InlineTableTooLarge(flowName: String, rows: Int, estimatedBytes: Long)
 
+  /** AUTO CDC flow whose target dataset exists but is not a streaming TABLE
+    * (the CDC MERGE requires a streaming-table shell as its target). */
+  case AutoCdcTargetNotStreamingTable(flowName: String, target: String)
+
+  /** AUTO CDC flow declared with no `keys` (row identity is mandatory). */
+  case AutoCdcKeysEmpty(flowName: String)
+
   /** Human-readable, single-line description for build logs. */
   def describe: String = this match
     case CycleDetected(path) =>
@@ -165,3 +172,8 @@ enum PipelineValidationError:
     case InlineTableTooLarge(flowName, rows, estimatedBytes) =>
       s"flow '$flowName' has an inline table that is too large ($rows rows, ~$estimatedBytes bytes) — " +
         s"inline data (createDataFrame) is for small lookup/seed tables; load larger data from a source table"
+    case AutoCdcTargetNotStreamingTable(flowName, target) =>
+      s"AUTO CDC flow '$flowName' targets '$target', which is not a streaming table — " +
+        s"create the target with createStreamingTable(\"$target\") (apply_changes MERGEs into a streaming table)"
+    case AutoCdcKeysEmpty(flowName) =>
+      s"AUTO CDC flow '$flowName' declares no keys — at least one key column is required to identify rows"

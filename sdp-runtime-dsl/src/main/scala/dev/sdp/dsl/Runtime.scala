@@ -1,7 +1,7 @@
 package dev.sdp.dsl
 
 import dev.sdp.core.algebra.*
-import dev.sdp.core.{Flow, GraphFragment, PipelineNode}
+import dev.sdp.core.{Flow, FlowDetails, GraphFragment, PipelineNode, ScdType}
 
 /** D10: a *runtime* plan-builder that IS the DSL frontend — producing
   * `Rel`/`Ex` algebra trees by ordinary value-level method calls. (Design
@@ -111,6 +111,118 @@ def sqlStreamingTable(name: String)(sql: String): GraphFragment =
     List(PipelineNode.StreamingTable(name, DefaultFormat)),
     Set.empty,
     List(Flow(name, name, Rel.Sql(sql))),
+  )
+
+// ====================================================================
+// AUTO CDC (Spark 4.2, gated) — apply_changes / SCD merge flows
+// ====================================================================
+
+/** A pipeline-managed *streaming table* shell, declared with no defining flow
+  * — the standard target for an AUTO CDC flow (Python `create_streaming_table`).
+  * A single `StreamingTable` node, default format, no flow: the data is
+  * produced by a separate [[createAutoCdcFlow]] (or any flow) that targets it.
+  *
+  * Distinct from [[table]]`(name)` (a body-less *batch* `Table` node): AUTO CDC
+  * MERGEs into a *streaming* table, so its target must be one. */
+def createStreamingTable(name: String): GraphFragment =
+  GraphFragment(List(PipelineNode.StreamingTable(name, DefaultFormat)), Set.empty)
+
+/** An AUTO CDC (apply_changes) flow — the declarative MERGE/SCD construct Spark
+  * 4.2 adds to SDP (donated from DLT). Streams `source` into the streaming
+  * table `target`, MERGEing rows identified by `keys` and ordered by
+  * `sequenceBy`. Mirrors the official Python `create_auto_cdc_flow`.
+  *
+  * Returns a flow-only fragment (no node): the `target` streaming table is
+  * declared separately via [[createStreamingTable]]. The `source` becomes a
+  * read/edge of this flow, so a missing source is caught by the existing
+  * dangling-dependency validator.
+  *
+  * **Gated** at the wire: `validate`/`manifest` work offline today, but
+  * `run`/`dry-run` fail with a clear error until the wire client bumps to
+  * `spark-connect-common >= 4.2.0` (see `docs/dsl.md`).
+  *
+  * @param storedAsScdType only `1` (SCD type 1) is supported, matching the
+  *                        proto's single `SCD_TYPE_1`.
+  * @param name            flow name; defaults to `s"${target}_auto_cdc"`.
+  */
+def createAutoCdcFlow(
+    target: String,
+    source: String,
+    keys: Seq[Column],
+    sequenceBy: Column,
+    applyAsDeletes: Option[Column] = None,
+    applyAsTruncates: Option[Column] = None,
+    columnList: Seq[Column] = Nil,
+    exceptColumnList: Seq[Column] = Nil,
+    ignoreNullUpdatesColumnList: Seq[Column] = Nil,
+    ignoreNullUpdatesExceptColumnList: Seq[Column] = Nil,
+    storedAsScdType: Int = 1,
+    name: Option[String] = None,
+    once: Boolean = false,
+): GraphFragment =
+  require(storedAsScdType == 1, s"AUTO CDC: only SCD type 1 is supported (got $storedAsScdType)")
+  val flowName = name.getOrElse(s"${target}_auto_cdc")
+  GraphFragment(
+    Nil,
+    Set.empty,
+    List(
+      Flow(
+        flowName,
+        target,
+        FlowDetails.AutoCdc(
+          source = source,
+          keys = keys.map(_.ex).toList,
+          sequenceBy = sequenceBy.ex,
+          applyAsDeletes = applyAsDeletes.map(_.ex),
+          applyAsTruncates = applyAsTruncates.map(_.ex),
+          columnList = columnList.map(_.ex).toList,
+          exceptColumnList = exceptColumnList.map(_.ex).toList,
+          ignoreNullUpdatesColumnList = ignoreNullUpdatesColumnList.map(_.ex).toList,
+          ignoreNullUpdatesExceptColumnList = ignoreNullUpdatesExceptColumnList.map(_.ex).toList,
+          scdType = ScdType.Scd1,
+        ),
+        once = once,
+      )
+    ),
+  )
+
+/** String-keyed convenience: `keys`/`sequenceBy` as column names (Python
+  * accepts `List[str]` / `str`). Lowers each to `col(name)`. */
+def createAutoCdcFlow(
+    target: String,
+    source: String,
+    keys: Seq[String],
+    sequenceBy: String,
+): GraphFragment =
+  createAutoCdcFlow(
+    target = target,
+    source = source,
+    keys = keys.map(col),
+    sequenceBy = col(sequenceBy),
+  )
+
+// ====================================================================
+// one-time / backfill flows — proto DefineFlow.once = 8
+// ====================================================================
+
+/** A streaming table fed by a *one-time* (backfill) flow: the flow body is a
+  * batch DataFrame, runs once, and re-runs only on full refresh (proto
+  * `DefineFlow.once`). Spelled as a dedicated wrapper so the `once` intent is
+  * explicit at the call site. */
+def streamingTableOnce(name: String)(body: => Df): GraphFragment =
+  GraphFragment(
+    List(PipelineNode.StreamingTable(name, DefaultFormat)),
+    Set.empty,
+    List(Flow(name, name, FlowDetails.WriteRelation(body.rel), once = true)),
+  )
+
+/** A batch table fed by a one-time (backfill) flow — the [[table]] analogue of
+  * [[streamingTableOnce]]. */
+def tableOnce(name: String)(body: => Df): GraphFragment =
+  GraphFragment(
+    List(PipelineNode.Table(name, DefaultFormat)),
+    Set.empty,
+    List(Flow(name, name, FlowDetails.WriteRelation(body.rel), once = true)),
   )
 
 // ====================================================================

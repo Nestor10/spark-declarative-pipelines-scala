@@ -1,7 +1,14 @@
 package dev.sdp.connect
 
-import dev.sdp.core.{PipelineManifest, PipelineNode}
+import dev.sdp.core.{FlowDetails, PipelineManifest, PipelineNode}
 import org.apache.spark.connect.proto as sc
+
+/** Thrown when the manifest carries a construct the pinned wire client cannot
+  * encode. AUTO CDC (`AutoCdcFlowDetails`) only exists in the Spark 4.2+
+  * `pipelines.proto`; this build pins `spark-connect-common 4.1.2`, whose
+  * generated classes have no such message. `validate`/`manifest` work offline
+  * today; `run`/`dry-run` cannot register such a flow until the dep bumps. */
+final class UnsupportedWireFeature(message: String) extends RuntimeException(message)
 
 /** Pure translation from the canonical [[PipelineManifest]] to the Spark
   * Declarative Pipelines wire protocol (`spark/connect/pipelines.proto`).
@@ -60,7 +67,11 @@ object PipelineProtoEncoder:
 
     val authoredTargets = manifest.flows.map(_.target).toSet
     val authored = manifest.flows.map { flow =>
-      flowCommand(graphId, flow.name, flow.target, AlgebraProtoEncoder.relation(flow.relation))
+      flow.details match
+        case FlowDetails.WriteRelation(rel) =>
+          flowCommand(graphId, flow.name, flow.target, AlgebraProtoEncoder.relation(rel), flow.once)
+        case _: FlowDetails.AutoCdc =>
+          autoCdcFlowCommand(graphId, flow)
     }
     val derived = manifest.nodes
       .filterNot(n => authoredTargets.contains(n.id))
@@ -216,6 +227,43 @@ object PipelineProtoEncoder:
       )
     if once then { val _ = flow.setOnce(true) }
     sc.PipelineCommand.newBuilder().setDefineFlow(flow).build()
+
+  /** AUTO CDC flow → the wire. **Gated**: the pinned `spark-connect-common
+    * 4.1.2` artifact has no `AutoCdcFlowDetails` message, so we cannot build the
+    * `DefineFlow.auto_cdc_flow_details` oneof branch. Fail loud with a readable,
+    * typed error rather than silently dropping the flow — `validate`/`manifest`
+    * already accepted it offline, so the user only hits this at `run`/`dry-run`.
+    *
+    * GATE(spark-4.2): when the dep bumps to `spark-connect-common >= 4.2.0`,
+    * delete the throw and emit the oneof branch. From `pipelines.proto`
+    * v4.2.0-rc1 (`AutoCdcFlowDetails`, field numbers noted in [[FlowDetails]]):
+    * {{{
+    *   val cdc = flow.details.asInstanceOf[FlowDetails.AutoCdc]
+    *   val ac  = sc.PipelineCommand.DefineFlow.AutoCdcFlowDetails.newBuilder()
+    *   ac.setSource(cdc.source)                                    // field 1
+    *   cdc.keys.foreach(k => ac.addKeys(AlgebraProtoEncoder.expression(k)))        // 2
+    *   ac.setSequenceBy(AlgebraProtoEncoder.expression(cdc.sequenceBy))            // 3
+    *   cdc.applyAsDeletes.foreach(e => ac.setApplyAsDeletes(AlgebraProtoEncoder.expression(e)))   // 6
+    *   cdc.applyAsTruncates.foreach(e => ac.setApplyAsTruncates(AlgebraProtoEncoder.expression(e)))// 7
+    *   cdc.columnList.foreach(e => ac.addColumnList(AlgebraProtoEncoder.expression(e)))            // 8
+    *   cdc.exceptColumnList.foreach(e => ac.addExceptColumnList(AlgebraProtoEncoder.expression(e)))// 9
+    *   cdc.scdType match { case ScdType.Scd1 => ac.setStoredAsScdType(sc.SCDType.SCD_TYPE_1) }     // 10
+    *   cdc.ignoreNullUpdatesColumnList.foreach(e => ac.addIgnoreNullUpdatesColumnList(...))        // 14
+    *   cdc.ignoreNullUpdatesExceptColumnList.foreach(e => ac.addIgnoreNullUpdatesExceptColumnList(...))// 15
+    *   val df = sc.PipelineCommand.DefineFlow.newBuilder()
+    *     .setDataflowGraphId(graphId).setFlowName(flow.name)
+    *     .setTargetDatasetName(flow.target).setAutoCdcFlowDetails(ac)
+    *   if flow.once then df.setOnce(true)
+    *   sc.PipelineCommand.newBuilder().setDefineFlow(df).build()
+    * }}}
+    * (`AlgebraProtoEncoder.expression` is the `Ex` → `sc.Expression` encoder.)
+    */
+  private def autoCdcFlowCommand(graphId: String, flow: dev.sdp.core.Flow): sc.PipelineCommand =
+    throw new UnsupportedWireFeature(
+      s"AUTO CDC flow '${flow.name}' (target '${flow.target}') requires a Spark 4.2+ wire client " +
+        "(spark-connect-common >= 4.2.0); this build pins 4.1.2 — validate/manifest work, " +
+        "run/dry-run cannot register this flow yet."
+    )
 
   private def readRelation(upstream: String, streaming: Boolean): sc.Relation =
     sc.Relation

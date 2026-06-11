@@ -16,8 +16,13 @@ package dev.sdp.core
   * *not* a goal here; wire interop arrives with the protobuf encoder.
   *
   * Format history: v1 = nodes + edges (shape only); v2 adds `flow|` lines
-  * carrying canonical relation trees. The parser stays bilingual — a v1
-  * manifest parses as a v2 manifest with no flows.
+  * carrying canonical relation trees; v3 generalizes `flow|` lines to carry
+  * [[FlowDetails]] (AUTO CDC) and a `once` flag (a fifth field). The parser
+  * stays trilingual — a v1 manifest parses as a v2 with no flows; a v2 parses
+  * as a v3 with only `WriteRelation`/`once = false` flows. The writer chooses
+  * the **lowest** version that can express the graph: a graph using no v3
+  * construct still renders as v2, byte-identical to before (cache stability +
+  * old-reader compatibility).
   */
 final case class PipelineManifest(
     formatVersion: Int,
@@ -40,9 +45,17 @@ final case class PipelineManifest(
 
 object PipelineManifest:
 
-  val CurrentVersion: Int = 2
-  private val SupportedVersions = Set(1, 2)
+  /** The highest format version this build can emit. The writer still picks
+    * the *lowest* version that expresses a given graph (see [[versionFor]]). */
+  val CurrentVersion: Int = 3
+  private val SupportedVersions = Set(1, 2, 3)
   private val Header            = "sdp-manifest"
+
+  /** The lowest format version that can express `flows`: v2 unless some flow
+    * needs a v3 construct (AUTO CDC or `once = true`). A graph with no v3
+    * construct renders byte-identically to the pre-v3 manifest. */
+  def versionFor(flows: List[Flow]): Int =
+    if flows.forall(LineCodec.isV2Flow) then 2 else 3
 
   /** Canonicalize a validated graph (no explicit flows). */
   def fromGraph(graph: PipelineGraph): PipelineManifest =
@@ -50,11 +63,12 @@ object PipelineManifest:
 
   /** Canonicalize a validated graph plus its authored flows. */
   def fromGraphAndFlows(graph: PipelineGraph, flows: List[Flow]): PipelineManifest =
+    val sortedFlows = flows.sortBy(f => (f.target, f.name))
     PipelineManifest(
-      CurrentVersion,
+      versionFor(sortedFlows),
       graph.nodes.values.toList.sortBy(_.id),
       graph.edges.toList.sortBy(e => (e.from, e.to)),
-      flows.sortBy(f => (f.target, f.name)),
+      sortedFlows,
     )
 
   enum ParseError:

@@ -150,6 +150,45 @@ object PipelineProtoEncoderSpec extends ZIOSpecDefault:
       val b = PipelineProtoEncoder.definitions(graphId, manifest).map(_.toByteArray.toList)
       assertTrue(a == b)
     },
+    test("an AUTO CDC flow is gated: encoding throws a readable UnsupportedWireFeature") {
+      import dev.sdp.core.algebra.Ex
+      val cdcManifest = PipelineManifest.fromGraphAndFlows(
+        PipelineGraph(Map("dim" -> PipelineNode.StreamingTable("dim", "delta")), Set.empty),
+        List(Flow(
+          "dim_auto_cdc", "dim",
+          FlowDetails.AutoCdc("bronze.cdc", List(Ex.Col("id")), Ex.Col("seq")),
+        )),
+      )
+      val thrown =
+        try { PipelineProtoEncoder.definitions(graphId, cdcManifest); None }
+        catch { case e: UnsupportedWireFeature => Some(e.getMessage) }
+      assertTrue(
+        thrown.exists(_.contains("spark-connect-common >= 4.2.0")),
+        thrown.exists(_.contains("dim_auto_cdc")),
+        thrown.exists(_.contains("validate/manifest work")),
+      )
+    },
+    test("a once=true WriteRelation flow encodes DefineFlow.once on the wire") {
+      import dev.sdp.core.algebra.Rel
+      val onceManifest = PipelineManifest.fromGraphAndFlows(
+        PipelineGraph(
+          Map(
+            "src" -> PipelineNode.StreamingTable("src", "delta"),
+            "out" -> PipelineNode.StreamingTable("out", "delta"),
+          ),
+          Set.empty,
+        ),
+        List(Flow(
+          "out", "out",
+          FlowDetails.WriteRelation(Rel.NamedTable("src", streaming = false)),
+          once = true,
+        )),
+      )
+      val flow = PipelineProtoEncoder.definitions(graphId, onceManifest)
+        .map(reparse).filter(_.hasDefineFlow).map(_.getDefineFlow)
+        .find(_.getFlowName == "out").get
+      assertTrue(flow.getOnce)
+    },
     test("createDataflowGraph and startRun(dry) build the bracketing commands") {
       val create = reparse(PipelineProtoEncoder.createDataflowGraph(Some("main"), Some("sales")))
       val run    = reparse(PipelineProtoEncoder.startRun(graphId, dry = true, storage = "file:///tmp/sdp"))

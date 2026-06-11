@@ -42,9 +42,12 @@ object ManifestAssembly:
     ): IO[::[PipelineValidationError], PipelineManifest] =
       val merged = GraphFragment.mergeAll(fragments)
 
-      // Lineage the flows actually have: every NamedTable read is an edge.
+      // Lineage the flows actually have: every read becomes an edge. For a
+      // WriteRelation flow that is each NamedTable read; for an AUTO CDC flow
+      // it is exactly the `source` (so a missing source falls out of the
+      // existing dangling-edge detection — no separate rule needed).
       val derivedEdges = merged.flows.flatMap { flow =>
-        Flow.reads(flow.relation).map(dev.sdp.core.DependencyEdge(_, flow.target))
+        Flow.reads(flow).map(dev.sdp.core.DependencyEdge(_, flow.target))
       }.toSet
 
       val declared = merged.nodes.map(_.id).toSet
@@ -53,17 +56,29 @@ object ManifestAssembly:
         .sortBy(f => (f.target, f.name))
         .map(f => PipelineValidationError.UnknownFlowTarget(f.name, f.target))
 
+      // AUTO-CDC-specific structural rules (target shape, key presence).
+      val cdcErrors = cdcStructuralErrors(merged.flows, merged.nodes)
+
+      val preErrors = targetErrors ++ cdcErrors
+
       validation
         .validate(merged.nodes, merged.edges ++ derivedEdges)
-        .map(graph => (targetErrors, Some(graph)))
-        .catchAll(graphErrors => ZIO.succeed((targetErrors ++ graphErrors.toList, None)))
+        .map(graph => (preErrors, Some(graph)))
+        .catchAll(graphErrors => ZIO.succeed((preErrors ++ graphErrors.toList, None)))
         .flatMap {
           case (Nil, Some(graph)) =>
             // Structure is sound — run gradual schema propagation in
             // topological order (schemas declared at leaves flow downstream;
-            // unknown shapes are simply unchecked).
-            val checks = schemaErrors(graph, merged.flows) ++
-              merged.flows.flatMap(f => dev.sdp.core.InlineDataGuard.check(f.name, f.relation))
+            // unknown shapes are simply unchecked). Only WriteRelation flows
+            // carry relations to check / inline data to guard; AUTO CDC flows
+            // contribute neither (their target shape is gradual-Unknown).
+            val relFlows = merged.flows.filter {
+              _.details match
+                case _: dev.sdp.core.FlowDetails.WriteRelation => true
+                case _: dev.sdp.core.FlowDetails.AutoCdc       => false
+            }
+            val checks = schemaErrors(graph, relFlows) ++
+              relFlows.flatMap(f => dev.sdp.core.InlineDataGuard.check(f.name, f.relation))
             checks match
               case Nil          => ZIO.succeed(PipelineManifest.fromGraphAndFlows(graph, merged.flows))
               case head :: tail => ZIO.fail(::(head, tail))
@@ -71,6 +86,36 @@ object ManifestAssembly:
             ZIO.fail(::(head, tail))
           case (Nil, None) =>
             ZIO.die(new IllegalStateException("validation failed with no errors — domain bug"))
+        }
+
+    /** AUTO CDC structural rules, accumulated (not short-circuiting):
+      *   - the target must be a declared **streaming TABLE** dataset (the CDC
+      *     flow MERGEs into it; the server requires a streaming table shell);
+      *   - `keys` must be non-empty (row identity is mandatory).
+      * The missing-`source` case is intentionally *not* here — it falls out of
+      * the generic dangling-read detection via the derived `source -> target`
+      * edge. */
+    private def cdcStructuralErrors(
+        flows: List[Flow],
+        nodes: List[dev.sdp.core.PipelineNode],
+    ): List[PipelineValidationError] =
+      import dev.sdp.core.{FlowDetails, PipelineNode}
+      val byId = nodes.map(n => n.id -> n).toMap
+      flows
+        .sortBy(f => (f.target, f.name))
+        .collect { case f @ Flow(_, _, cdc: FlowDetails.AutoCdc, _) => (f, cdc) }
+        .flatMap { (f, cdc) =>
+          val targetErr = byId.get(f.target) match
+            case Some(_: PipelineNode.StreamingTable) => Nil
+            case Some(_) =>
+              List(PipelineValidationError.AutoCdcTargetNotStreamingTable(f.name, f.target))
+            case None =>
+              // unknown target is already reported as UnknownFlowTarget; don't
+              // double-report it as a type error.
+              Nil
+          val keyErr =
+            if cdc.keys.isEmpty then List(PipelineValidationError.AutoCdcKeysEmpty(f.name)) else Nil
+          targetErr ++ keyErr
         }
 
     /** Propagate dataset shapes through the validated graph and collect

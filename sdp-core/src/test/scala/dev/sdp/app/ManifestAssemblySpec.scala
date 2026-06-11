@@ -87,6 +87,86 @@ object ManifestAssemblySpec extends ZIOSpecDefault:
         })
       )
     },
+    test("a valid AUTO CDC flow into a streaming table assembles into a v3 manifest") {
+      import dev.sdp.core.algebra.*
+      val fragment = GraphFragment(
+        List(
+          PipelineNode.ExternalTable("bronze.cdc"),
+          PipelineNode.StreamingTable("dim", "delta"),
+        ),
+        Set.empty,
+        List(Flow(
+          "dim_auto_cdc",
+          "dim",
+          FlowDetails.AutoCdc(
+            source = "bronze.cdc",
+            keys = List(Ex.Col("id")),
+            sequenceBy = Ex.Col("seq"),
+          ),
+        )),
+      )
+      for manifest <- ManifestAssembly.assemble(List(fragment))
+      yield assertTrue(
+        manifest.formatVersion == 3,
+        // source becomes a derived lineage edge into the target
+        manifest.edges == List(DependencyEdge("bronze.cdc", "dim")),
+        manifest.flows.map(_.name) == List("dim_auto_cdc"),
+      )
+    },
+    test("AUTO CDC into a non-streaming-table target is rejected") {
+      import dev.sdp.core.algebra.*
+      val fragment = GraphFragment(
+        List(tbl("src"), tbl("dim")), // dim is a batch Table, not streaming
+        Set.empty,
+        List(Flow(
+          "dim_auto_cdc", "dim",
+          FlowDetails.AutoCdc("src", List(Ex.Col("id")), Ex.Col("seq")),
+        )),
+      )
+      for exit <- ManifestAssembly.assemble(List(fragment)).exit
+      yield assertTrue(
+        exit.causeOption.flatMap(_.failureOption).exists(_.exists {
+          case AutoCdcTargetNotStreamingTable("dim_auto_cdc", "dim") => true
+          case _                                                     => false
+        })
+      )
+    },
+    test("AUTO CDC with empty keys is rejected") {
+      import dev.sdp.core.algebra.*
+      val fragment = GraphFragment(
+        List(tbl("src"), PipelineNode.StreamingTable("dim", "delta")),
+        Set.empty,
+        List(Flow(
+          "dim_auto_cdc", "dim",
+          FlowDetails.AutoCdc("src", Nil, Ex.Col("seq")),
+        )),
+      )
+      for exit <- ManifestAssembly.assemble(List(fragment)).exit
+      yield assertTrue(
+        exit.causeOption.flatMap(_.failureOption).exists(_.exists {
+          case AutoCdcKeysEmpty("dim_auto_cdc") => true
+          case _                                => false
+        })
+      )
+    },
+    test("AUTO CDC with a missing source is caught by the dangling-read rule") {
+      import dev.sdp.core.algebra.*
+      val fragment = GraphFragment(
+        List(PipelineNode.StreamingTable("dim", "delta")), // no source declared
+        Set.empty,
+        List(Flow(
+          "dim_auto_cdc", "dim",
+          FlowDetails.AutoCdc("ghost.cdc", List(Ex.Col("id")), Ex.Col("seq")),
+        )),
+      )
+      for exit <- ManifestAssembly.assemble(List(fragment)).exit
+      yield assertTrue(
+        exit.causeOption.flatMap(_.failureOption).exists(_.exists {
+          case DanglingEdges(ids) => ids.contains("ghost.cdc")
+          case _                  => false
+        })
+      )
+    },
     test("a flow targeting an undeclared dataset fails, accumulated with graph errors") {
       import dev.sdp.core.algebra.*
       val fragment = GraphFragment(

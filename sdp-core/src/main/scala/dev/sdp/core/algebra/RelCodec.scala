@@ -233,6 +233,15 @@ object RelCodec:
       rel  <- rel(sexp)
     yield rel
 
+  /** Parse a single expression s-expr (the inverse of [[renderEx]]). Used by
+    * [[dev.sdp.core.FlowCodec]] to (de)serialize AUTO CDC key/sequence/filter
+    * expressions, which are `Ex` trees outside any `Rel`. */
+  def parseEx(text: String): Either[String, Ex] =
+    for
+      sexp <- Sexp.read(text)
+      e    <- ex(sexp)
+    yield e
+
   private enum Sexp:
     case Atom(value: String)
     case ListOf(items: List[Sexp])

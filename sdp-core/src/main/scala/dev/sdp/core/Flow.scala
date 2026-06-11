@@ -2,17 +2,52 @@ package dev.sdp.core
 
 import dev.sdp.core.algebra.{Ex, Rel, SubqueryKind}
 
-/** A transformation flow: `relation` computes the data written to `target`.
+/** A transformation flow that produces the data written to `target`.
   *
-  * Flows are first-class fragment content (manifest format v2): authored
-  * bodies travel as canonical [[algebra.RelCodec]] trees rather than being
-  * derived from lineage edges. Lineage *edges* are still derived — from the
-  * relation's reads — so compile-time cycle/dangling validation sees exactly
-  * what the flow actually reads.
+  * Flows are first-class fragment content (manifest format v2+): authored
+  * bodies travel as canonical [[algebra.RelCodec]] trees (or, for AUTO CDC,
+  * as [[FlowDetails.AutoCdc]] parameters) rather than being derived from
+  * lineage edges. Lineage *edges* are still derived — from what the flow
+  * reads — so build-time cycle/dangling validation sees exactly what the flow
+  * actually reads.
+  *
+  * @param details what the flow does: write a [[algebra.Rel]] (the v2 shape)
+  *                or AUTO CDC merge a source (Spark 4.2)
+  * @param once    one-time / backfill flow (proto `DefineFlow.once = 8`): the
+  *                body runs once and re-runs only on full refresh. `false` is
+  *                the v2-compatible default and never widens the manifest.
   */
-final case class Flow(name: String, target: String, relation: Rel)
+final case class Flow(
+    name: String,
+    target: String,
+    details: FlowDetails,
+    once: Boolean = false,
+):
+
+  /** The defining relation, for [[FlowDetails.WriteRelation]] flows. AUTO CDC
+    * flows have no defining relation — calling this on one is a defect (the
+    * legacy `flow.relation` paths — golden render, manifest-v2 line codec —
+    * only ever hold WriteRelation flows). New code must match on `details`. */
+  def relation: Rel = details match
+    case FlowDetails.WriteRelation(rel) => rel
+    case _: FlowDetails.AutoCdc =>
+      throw new IllegalStateException(
+        s"flow '$name' is an AUTO CDC flow and has no defining relation; match on `details` instead"
+      )
 
 object Flow:
+
+  /** Back-compat constructor: a flow that writes `relation` into `target`.
+    * Every pre-4.2 call site (`Flow(name, target, rel)`) keeps compiling, and
+    * `once` defaults to `false`. */
+  def apply(name: String, target: String, relation: Rel): Flow =
+    Flow(name, target, FlowDetails.WriteRelation(relation), once = false)
+
+  /** Datasets a *flow* reads — the lineage backstop. AUTO CDC reads exactly
+    * its `source`; a relation flow reads via [[reads(Rel)]]. */
+  def reads(flow: Flow): Set[String] = flow.details match
+    case FlowDetails.WriteRelation(rel) => reads(rel)
+    case cdc: FlowDetails.AutoCdc       => Set(cdc.source)
 
   /** Dataset names this relation reads via `Rel.NamedTable` — including
     * reads inside subquery expressions (lineage sees through `exists`/

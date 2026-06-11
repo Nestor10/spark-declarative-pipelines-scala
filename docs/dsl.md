@@ -120,6 +120,63 @@ datasets with `STREAM(...)`. Note `STREAM` works over streaming tables, not
 batch views; data enters a pipeline through real streaming sources (Kafka,
 files, `rate`), which the typed algebra exposes as `Rel.DataSource`.
 
+### AUTO CDC (Spark 4.2, gated)
+
+Spark 4.2 adds **AUTO CDC** to SDP — the declarative MERGE/SCD construct
+donated from DLT's `apply_changes`. You declare a *streaming-table shell* as
+the target and an `createAutoCdcFlow` that streams a CDC source into it:
+
+```scala
+val cdcSource = externalTable("bronze.customer_cdc")
+val dim       = createStreamingTable("dim_customers")           // body-less target shell
+
+val applyCdc = createAutoCdcFlow(
+  target         = "dim_customers",
+  source         = "bronze.customer_cdc",
+  keys           = Seq(col("id")),                 // row identity (Seq[Column] or Seq[String])
+  sequenceBy     = col("event_ts"),                // ordering of source events (Column or String)
+  applyAsDeletes = Some(col("op") === lit("DELETE")),
+  storedAsScdType = 1,                             // only SCD type 1 exists so far
+)
+
+object Customers extends SdpApp:
+  def pipeline = Pipeline(cdcSource, dim, applyCdc)
+```
+
+Surface (mirrors the official Python `create_auto_cdc_flow`):
+`createAutoCdcFlow(target, source, keys, sequenceBy, applyAsDeletes?,
+applyAsTruncates?, columnList?, exceptColumnList?,
+ignoreNullUpdatesColumnList?, ignoreNullUpdatesExceptColumnList?,
+storedAsScdType = 1, name = Some(s"${target}_auto_cdc"), once = false)`.
+A `Seq[String]`/`String` overload of `keys`/`sequenceBy` lowers to `col(...)`.
+
+**Semantics.** The flow MERGEs the source into the target; the `source`
+becomes a read (lineage edge) of the flow, so a missing source is caught by
+the dangling-dependency validator. Validation also enforces that the target is
+a declared **streaming table** and that `keys` is non-empty.
+
+**Gated at the wire.** Our wire client pins `spark-connect-common 4.1.2`,
+which has no `AutoCdcFlowDetails` message. So `sdpValidate` / `sdpManifest`
+(offline, deterministic) fully support AUTO CDC *today* — the domain, codec,
+and validation all work — but `sdpRun` / `sdpDryRun` (and `SdpApp run`) fail
+with a clear error until the dep bumps to `spark-connect-common >= 4.2.0`:
+
+> AUTO CDC flow '…' requires a Spark 4.2+ wire client
+> (spark-connect-common >= 4.2.0); this build pins 4.1.2 — validate/manifest
+> work, run/dry-run cannot register this flow yet.
+
+The manifest header bumps to `sdp-manifest/3` when a pipeline contains an AUTO
+CDC flow (or a `once` flow, below); pipelines without these constructs still
+write `sdp-manifest/2`, byte-identical to before.
+
+### One-time / backfill flows (`once`)
+
+`streamingTableOnce(name)(body)` / `tableOnce(name)(body)` declare a flow whose
+body is a batch DataFrame that runs **once** and re-runs only on full refresh
+(proto `DefineFlow.once`). `createAutoCdcFlow(..., once = true)` does the same
+for an AUTO CDC flow. Like AUTO CDC, a `once = true` flow renders under
+`sdp-manifest/3`.
+
 ## The fluent flow language
 
 `streamingTable` / `materializedView` also accept a **typed flow body** (in

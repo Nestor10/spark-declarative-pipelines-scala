@@ -277,7 +277,12 @@ object SparkPipelinesPlugin extends AutoPlugin {
         case Right(manifest) =>
           import dev.sdp.core.algebra.SchemaCheck
           val order    = manifest.toGraph.topologicalSort.getOrElse(Nil)
-          val byTarget = manifest.flows.groupBy(_.target).view.mapValues(_.map(f => (f.name, f.relation))).toMap
+          // Only WriteRelation flows carry a relation to infer a shape from;
+          // AUTO CDC flows contribute a gradual-Unknown target shape.
+          val relFlows = manifest.flows.collect {
+            case f @ dev.sdp.core.Flow(_, _, _: dev.sdp.core.FlowDetails.WriteRelation, _) => f
+          }
+          val byTarget = relFlows.groupBy(_.target).view.mapValues(_.map(f => (f.name, f.relation))).toMap
           val (_, shapes) = SchemaCheck.propagate(order, byTarget)
           shapes.toList.collect { case (dataset, SchemaCheck.Shape.Known(cols)) =>
             dev.sdp.core.algebra.SchemaCodegen.Entry(dataset, cols, "pipeline-inferred")

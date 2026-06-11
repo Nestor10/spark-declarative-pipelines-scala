@@ -55,6 +55,11 @@ write the pipeline object.
 | `sdpSchemasPackage` | setting | Package of the generated aliases (default `sdp.schemas`) |
 | `sdpCatalogTables` | setting | Remote tables to import (schema via the server's analyzer), e.g. `Seq("sales.orders")` |
 
+> **AUTO CDC (Spark 4.2, gated):** `sdpValidate` / `sdpManifest` fully support
+> pipelines containing `createAutoCdcFlow` today (offline). `sdpRun` /
+> `sdpDryRun` fail with a clear error on such a pipeline until the wire client
+> bumps to `spark-connect-common >= 4.2.0` — see `docs/dsl.md`.
+
 ## The inner loop — `~sdpValidate` / `~sdpDryRun`
 
 For fast feedback while authoring, run a validate task under sbt's file watch:
