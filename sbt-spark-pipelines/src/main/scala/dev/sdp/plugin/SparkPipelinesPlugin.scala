@@ -104,7 +104,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
       "Run sdpSeedStatements against the Spark Connect server (local catalog-fixture seeding)."
     )
     val sdpRuntimeVersion = settingKey[String](
-      "Version of the sdp-runtime-dsl AND sdp-connect libraries to inject. Defaults to " +
+      "Version of the sdp library to inject. Defaults to " +
         "the plugin's own version (lockstep — the plugin, DSL and Connect client share the fragment " +
         "string + wire contract). Override only for local testing or an emergency hotfix."
     )
@@ -118,16 +118,15 @@ object SparkPipelinesPlugin extends AutoPlugin {
     // Version lockstep: the consumer writes ONE version (the addSbtPlugin
     // line); the matching runtime DSL AND Connect client are injected
     // automatically. `%%` adds the Scala 3 `_3` suffix, matching the published
-    // `sdp-runtime-dsl_3` / `sdp-connect_3`. Appending (+=) never clobbers the
+    // `sdp_3`. Appending (+=) never clobbers the
     // consumer's other deps, and the setting key is the documented override
     // (or `dependencyOverrides`).
-    //   - sdp-runtime-dsl: the authoring surface (`table`/`view`/`functions`).
-    //   - sdp-connect: `SdpApp` (users extend it) + the Connect client. Needed
-    //     on the consumer's classpath both so `object X extends SdpApp` compiles
-    //     and so the plugin's child-loader eval can resolve SdpApp/PipelineExport.
+    //   - sdp: the authoring surface (`dev.sdp.dsl`), `SdpApp` (users extend
+    //     it), and the Connect client — one artifact (2026-06-11 collapse).
+    //     Needed on the consumer's classpath both so `object X extends SdpApp`
+    //     compiles and so the child-loader eval can resolve SdpApp/PipelineExport.
     sdpRuntimeVersion := SdpBuildInfo.version,
-    libraryDependencies += SdpBuildInfo.organization %% "sdp-runtime-dsl" % sdpRuntimeVersion.value,
-    libraryDependencies += SdpBuildInfo.organization %% "sdp-connect"     % sdpRuntimeVersion.value,
+    libraryDependencies += SdpBuildInfo.organization %% "sdp" % sdpRuntimeVersion.value,
 
     sdpPipelineClass := "",
 

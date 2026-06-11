@@ -26,7 +26,7 @@ lazy val myPipelines = (project in file("."))
 ```
 
 You write **one** version (the `addSbtPlugin` line). The matching
-`sdp-runtime-dsl` (the authoring surface) and `sdp-connect` (`SdpApp` + the
+the `sdp` library (authoring surface + `SdpApp` + the
 Connect client) are injected automatically, in lockstep with the plugin —
 override with `sdpRuntimeVersion` only for local testing. The plugin does not
 auto-activate (`noTrigger`); enable it per project.

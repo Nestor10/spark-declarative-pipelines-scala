@@ -83,7 +83,7 @@ Confirm POMs and artifacts before anything leaves your machine:
 
 ```
 sbt 'set ThisBuild / version := "0.1.0"' \
-  'sdpCore/publishLocal; sdpRuntimeDsl/publishLocal; sdpConnect/publishLocal; sbtSparkPipelines/publishLocal'
+  'sdp/publishLocal; sbtSparkPipelines/publishLocal'
 ```
 
 Then inspect the generated POMs (under `~/.ivy2/local/io.github.nestor10/...`
@@ -97,7 +97,7 @@ manual bundle:
 
 ```
 sbt 'set ThisBuild / version := "0.1.0"' \
-  'sdpCore/publishM2; sdpRuntimeDsl/publishM2; sdpConnect/publishM2; sbtSparkPipelines/publishM2'
+  'sdp/publishM2; sbtSparkPipelines/publishM2'
 ```
 
 Central requires **sources** and **javadoc** jars alongside each artifact; sbt
@@ -183,7 +183,7 @@ the dev commit and record the version in the tag message.)
       (`scripts/republish-and-reset-example.sh` evicts `io.github.nestor10`),
       and confirm `sbt sdpManifest` resolves the released coordinates from
       Central — not from `~/.ivy2/local`. The version-lockstep injection in the
-      plugin (`SdpBuildInfo.organization %% "sdp-runtime-dsl" % SdpBuildInfo.version`)
+      plugin (`SdpBuildInfo.organization %% "sdp" % SdpBuildInfo.version`)
       pulls `io.github.nestor10 %% sdp-runtime-dsl % 0.1.0` and
       `io.github.nestor10 %% sdp-connect % 0.1.0` automatically.
 - [ ] **Update `ROADMAP.md`:** move "Release prep" out of remaining work; record

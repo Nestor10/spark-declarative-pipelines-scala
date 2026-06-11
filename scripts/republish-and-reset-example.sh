@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Republish all three modules and reset the sdp-example consumer so it can't
+# Republish both modules and reset the sdp-example consumer so it can't
 # resolve a stale SNAPSHOT. Needed after a CODEC/FORMAT change (manifest, RelCodec)
-# — those require the macro embedder (sdp-runtime-dsl) and the plugin's parser
-# (sdp-core) to move in lockstep, and the consumer's metabuild caches the old
+# — the fragment/manifest codec lives in the sdp library consumed by BOTH the
+# user build and the plugin metabuild, and the consumer's metabuild caches the old
 # plugin closure. (Plain logic changes usually don't need this.)
 #
 # Usage: scripts/republish-and-reset-example.sh   (run from the main repo root)
 set -euo pipefail
 EXAMPLE="${1:-../sdp-example}"
 
-echo "▸ publishing sdp-core, sdp-runtime-dsl, sdp-connect, sbt-spark-pipelines (Local + M2)…"
-sbt --client "sdpCore/publishLocal; sdpCore/publishM2; sdpRuntimeDsl/publishLocal; sdpRuntimeDsl/publishM2; sdpConnect/publishLocal; sdpConnect/publishM2; sbtSparkPipelines/publishLocal; sbtSparkPipelines/publishM2" >/dev/null
+echo "▸ publishing sdp + sbt-spark-pipelines (Local + M2)…"
+sbt --client "sdp/publishLocal" >/dev/null && sbt --client "sdp/publishM2" >/dev/null && sbt --client "sbtSparkPipelines/publishLocal" >/dev/null && sbt --client "sbtSparkPipelines/publishM2" >/dev/null
 
 echo "▸ evicting io.github.nestor10 from ivy + coursier caches…"
 # Maven groupId is io.github.nestor10 (Scala packages stay dev.sdp). Also clean

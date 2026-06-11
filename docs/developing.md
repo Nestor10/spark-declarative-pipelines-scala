@@ -8,8 +8,7 @@ them. (For the plugin's *user-facing* tasks — `sdpManifest`, `sdpPush`,
 
 | sbt project | Path | Contents |
 |---|---|---|
-| `sdpCore` | `sdp-core/` | Pure domain (graph, manifest, algebra, schema inference) + ZIO services |
-| `sdpRuntimeDsl` | `sdp-runtime-dsl/` | Author-facing DSL + macros (`FlowExtractor`, `SdpMeta`, `cols[S]`) |
+| `sdp` | `sdp/` | THE library: pure domain (`dev.sdp.core`), ZIO services (`dev.sdp.app`), runtime plan-builder DSL (`dev.sdp.dsl`), Spark Connect client + `SdpApp` (`dev.sdp.connect`) |
 | `sbtSparkPipelines` | `sbt-spark-pipelines/` | The sbt plugin: TASTy scanner, proto encoders, gRPC client, conformance harness |
 | `root` | `.` | Aggregate only; never published |
 
@@ -18,7 +17,7 @@ them. (For the plugin's *user-facing* tasks — `sdpManifest`, `sdpPush`,
 ```
 sbt compile                      # all modules
 sbt testFull                     # every zio-test suite, all modules
-sbt sdpCore/testFull             # one module (also: sdpRuntimeDsl, sbtSparkPipelines)
+sbt sdp/testFull                 # the library (also: sbtSparkPipelines)
 ```
 
 **Gotchas (sbt 2.0):**
@@ -27,7 +26,7 @@ sbt sdpCore/testFull             # one module (also: sdpRuntimeDsl, sbtSparkPipe
 - The thin client sometimes swallows test output. For reliable per-suite output, fork a runner:
 
   ```
-  sbt 'sdpRuntimeDsl/Test/runMain dev.sdp.dsl.FlowLanguageSpec'
+  sbt 'sdp/Test/runMain dev.sdp.dsl.GoldenRenderSpec'
   ```
 
   (zio-test specs are mains; any FQN spec name works.)
@@ -111,7 +110,7 @@ every capability claim names a real wire field. It also prints the coverage repo
 ## Publishing locally (for sandbox/e2e experiments)
 
 ```
-sbt 'sdpCore/publishLocal; sdpRuntimeDsl/publishLocal; sbtSparkPipelines/publishLocal'
+sbt 'sdp/publishLocal' && sbt 'sbtSparkPipelines/publishLocal'
 ```
 
 Then a scratch project (`project/plugins.sbt` → `addSbtPlugin("io.github.nestor10" % "sbt-spark-pipelines"
@@ -131,9 +130,9 @@ republishing changed macro/helper code, restart the scratch project's sbt server
 A consumer that resolves the plugin from `publishLocal`/`publishM2` can pick up a **stale**
 plugin after you republish a `-SNAPSHOT` — the consumer's metabuild caches the old plugin
 closure (coursier + its `project/target`). It bites specifically on **codec/format changes**
-(the manifest, `RelCodec`): the macro *embedder* (`sdp-runtime-dsl`, main build) and the
-*parser* (`sdp-core` inside the plugin, metabuild) must move in lockstep, and `CoreEpoch` only
-busts the macro side. Symptom: `Malformed macro-embedded fragment line … bug in sdp-runtime-dsl`,
+(the manifest, `RelCodec`): the fragment *encoder* (the sdp library on the user classpath) and
+the *parser* (the sdp library inside the plugin metabuild) must move in lockstep, and `CoreEpoch`
+only busts one side. Symptom: `Malformed … fragment line`,
 or `NoClassDefFoundError`/`ZipException` at plugin load.
 
 Fix (one command, from the main repo root), then restart the consumer's sbt session:

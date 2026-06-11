@@ -5,6 +5,6 @@ lazy val root = (project in file("."))
   .settings(
     name         := "cyclic-pipeline",
     scalaVersion := "3.8.4",
-    libraryDependencies += "io.github.nestor10" %% "sdp-runtime-dsl" % pluginVersion,
+    libraryDependencies += "io.github.nestor10" %% "sdp" % pluginVersion,
     sdpPipelineClass := "pipelines.Warehouse",
   )

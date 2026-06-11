@@ -1,4 +1,4 @@
-# Pipeline DSL (`sdp-runtime-dsl`)
+# Pipeline DSL (`dev.sdp.dsl`, in the `sdp` library)
 
 Declare Spark Declarative Pipelines datasets in pure Scala 3. The DSL is a
 **runtime plan-builder**: each combinator is an ordinary function that builds a
@@ -396,7 +396,7 @@ object Warehouse extends SdpApp:
   )
 ```
 
-`SdpApp` (from `sdp-connect`) makes that same object a **standalone runner**:
+`SdpApp` (from `dev.sdp.connect.app`) makes that same object a **standalone runner**:
 the uber jar IS the production entry point — `java -jar app.jar validate`,
 `manifest [--out p]`, or `run [--dry]`, with config read from the environment
 (`SDP_CONNECT_ENDPOINT`, `SDP_STORAGE_ROOT`, `SDP_PIPELINE_NAME`). Argo/K8s
