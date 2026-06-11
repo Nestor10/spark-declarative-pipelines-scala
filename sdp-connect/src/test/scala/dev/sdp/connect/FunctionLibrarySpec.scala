@@ -1,8 +1,7 @@
-package dev.sdp.plugin.connect
+package dev.sdp.connect
 
 import dev.sdp.core.algebra.*
 import dev.sdp.dsl.*
-import dev.sdp.plugin.AlgebraProtoEncoder
 import zio.*
 import zio.test.*
 

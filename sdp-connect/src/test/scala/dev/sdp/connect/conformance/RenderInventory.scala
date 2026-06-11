@@ -1,4 +1,4 @@
-package dev.sdp.plugin.conformance
+package dev.sdp.connect.conformance
 
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Paths}
@@ -8,8 +8,8 @@ import java.nio.file.{Files, Paths}
   * the upstream change report:
   *
   * {{{
-  * sbt 'sbtSparkPipelines/Test/runMain dev.sdp.plugin.conformance.RenderInventory \
-  *   sbt-spark-pipelines/src/test/resources/spark-connect-inventory.txt'
+  * sbt 'sdpConnect/Test/runMain dev.sdp.connect.conformance.RenderInventory \
+  *   sdp-connect/src/test/resources/spark-connect-inventory.txt'
   * }}}
   */
 object RenderInventory:

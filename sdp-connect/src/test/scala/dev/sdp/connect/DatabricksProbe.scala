@@ -1,11 +1,10 @@
-package dev.sdp.plugin.connect
+package dev.sdp.connect
 
 import java.nio.file.{Files, Paths}
 import java.util.UUID
 
 import scala.jdk.CollectionConverters.*
 
-import dev.sdp.plugin.PipelineProtoEncoder
 import io.grpc.{ManagedChannelBuilder, Metadata}
 import io.grpc.stub.MetadataUtils
 import org.apache.spark.connect.proto as sc
@@ -14,7 +13,7 @@ import org.apache.spark.connect.proto as sc
   * endpoint. NOT a CI test — run manually:
   *
   * {{{
-  * sbt 'sbtSparkPipelines/Test/runMain dev.sdp.plugin.connect.DatabricksProbe \
+  * sbt 'sdpConnect/Test/runMain dev.sdp.connect.DatabricksProbe \
   *   dbc-XXXX.cloud.databricks.com secrets/pat.txt'
   * }}}
   *

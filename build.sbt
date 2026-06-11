@@ -1,18 +1,26 @@
 // =====================================================================
 // sbt-spark-pipelines — multi-module build
 //
-// Three modules form the Onion (dependencies flow inward only):
+// Four modules form the Onion (dependencies flow inward only):
 //
-//   sbt-spark-pipelines  (Infrastructure: sbt AutoPlugin + Spark Connect)
+//   sbt-spark-pipelines  (Infrastructure: thin sbt AutoPlugin wrapper)
 //          │
+//          ▼ depends on
+//   sdp-connect          (Infrastructure: Spark Connect client library +
+//          │              the SdpApp library-first runner)
 //          ▼ depends on
 //   sdp-core             (Domain Core + Application Services / ZIO)
 //          ▲
 //          │ depends on
 //   sdp-runtime-dsl      (Infrastructure: macro DSL for authors)
 //
-// `sdp-runtime-dsl` and `sbt-spark-pipelines` both depend on `sdp-core`
-// but NEVER on each other — they're sibling Infrastructure adapters.
+// `sdp-runtime-dsl`, `sdp-connect`, and `sbt-spark-pipelines` all depend
+// on `sdp-core` (directly or transitively) but `sdp-runtime-dsl` and
+// `sdp-connect` NEVER depend on each other — they're sibling
+// Infrastructure adapters. The plugin gets the Connect client by
+// depending on `sdp-connect`; the Connect client (and `SdpApp`) ship as
+// a plain library so the production runner can live in the user's uber
+// jar, scheduled by Argo/K8s, with no sbt on the path (D10).
 // =====================================================================
 
 ThisBuild / organization := "dev.sdp"           // TODO: replace with real org coords before first publish
@@ -62,19 +70,18 @@ lazy val sdpRuntimeDsl = (project in file("sdp-runtime-dsl"))
   )
 
 // ---------------------------------------------------------------------
-// sbt-spark-pipelines — the sbt 2.0 AutoPlugin
-//   Drives macro extraction at compile time, validates via sdp-core,
-//   and pushes the resulting Protobuf graph to Spark Connect.
+// sdp-connect — the Spark Connect client library + SdpApp runner
+//   Pure library (no sbt): encodes the validated graph to the SDP
+//   Protobuf wire protocol and drives the remote PipelinesHandler over
+//   gRPC. `SdpApp` (a ZIOAppDefault) is the library-first production
+//   runner that ships in the user's uber jar (D10). The sbt plugin
+//   consumes this via `.dependsOn(sdpConnect)`.
 // ---------------------------------------------------------------------
-lazy val sbtSparkPipelines = (project in file("sbt-spark-pipelines"))
-  .dependsOn(sdpCore, sdpRuntimeDsl % "test->compile")
-  .enablePlugins(SbtPlugin)
+lazy val sdpConnect = (project in file("sdp-connect"))
+  .dependsOn(sdpCore)
   .settings(
-    name := "sbt-spark-pipelines",
+    name := "sdp-connect",
     libraryDependencies ++= Seq(
-      // Reads macro-embedded fragment constants out of .tasty files —
-      // no classloading of user code, ever. See ROADMAP "Fragment discovery".
-      "ch.epfl.scala" %% "tasty-query"  % "1.8.0",
       // Spark's own generated protobuf classes (pure Java) — the wire
       // contract for the SDP PipelinesHandler, identical to the server's by
       // construction. intransitive: keep Spark's 2.13 closure out of our
@@ -90,7 +97,41 @@ lazy val sbtSparkPipelines = (project in file("sbt-spark-pipelines"))
       "io.grpc" % "grpc-protobuf"     % "1.76.0",
       // ZStream models the run's gRPC server-stream of progress events
       // (Zionomicon ch.36: server streaming = ZStream); core ZIO module.
+      "dev.zio"       %% "zio"          % zioVersion,
       "dev.zio"       %% "zio-streams"  % zioVersion,
+      "dev.zio"       %% "zio-test"     % zioVersion % Test,
+      "dev.zio"       %% "zio-test-sbt" % zioVersion % Test,
+    ),
+    testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
+    // Forked tests: the container-backed integration specs (AlgebraOracleSpec,
+    // FunctionLibrarySpec, PipelinesRegistrationIntegrationSpec) want a clean
+    // JVM and the real classpath via java.class.path. The SDP_INTEGRATION gate
+    // keeps them off CI without a container engine.
+    Test / fork := true,
+  )
+  // Some moved specs (FunctionLibrarySpec, the F11c case in
+  // PipelinesRegistrationIntegrationSpec) author pipelines through the fluent
+  // flow language, so the Connect test sources compile against the runtime
+  // DSL. Mirrors the plugin's old `sdpRuntimeDsl % "test->compile"`. The
+  // sibling-module rule still holds: this is a TEST-only dependency, so
+  // sdp-connect and sdp-runtime-dsl never depend on each other in main.
+  .dependsOn(sdpRuntimeDsl % "test->compile")
+
+// ---------------------------------------------------------------------
+// sbt-spark-pipelines — the sbt 2.0 AutoPlugin
+//   A thin convenience wrapper: drives macro extraction at compile time,
+//   validates via sdp-core, and pushes the resulting Protobuf graph to
+//   Spark Connect by delegating to `sdp-connect`.
+// ---------------------------------------------------------------------
+lazy val sbtSparkPipelines = (project in file("sbt-spark-pipelines"))
+  .dependsOn(sdpCore, sdpConnect, sdpRuntimeDsl % "test->compile")
+  .enablePlugins(SbtPlugin)
+  .settings(
+    name := "sbt-spark-pipelines",
+    libraryDependencies ++= Seq(
+      // Reads macro-embedded fragment constants out of .tasty files —
+      // no classloading of user code, ever. See ROADMAP "Fragment discovery".
+      "ch.epfl.scala" %% "tasty-query"  % "1.8.0",
       "dev.zio"       %% "zio-test"     % zioVersion % Test,
       "dev.zio"       %% "zio-test-sbt" % zioVersion % Test,
     ),
@@ -142,7 +183,8 @@ lazy val sbtSparkPipelines = (project in file("sbt-spark-pipelines"))
     scriptedDependencies := {
       val a = (sdpCore / publishLocal).value
       val b = (sdpRuntimeDsl / publishLocal).value
-      val c = publishLocal.value
+      val c = (sdpConnect / publishLocal).value
+      val d = publishLocal.value
     },
   )
 
@@ -150,7 +192,7 @@ lazy val sbtSparkPipelines = (project in file("sbt-spark-pipelines"))
 // Root aggregate — coordination only, never published.
 // ---------------------------------------------------------------------
 lazy val root = (project in file("."))
-  .aggregate(sdpCore, sdpRuntimeDsl, sbtSparkPipelines)
+  .aggregate(sdpCore, sdpRuntimeDsl, sdpConnect, sbtSparkPipelines)
   .settings(
     name           := "sbt-spark-pipelines-root",
     publish / skip := true,

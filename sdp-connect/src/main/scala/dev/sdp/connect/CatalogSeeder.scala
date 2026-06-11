@@ -1,4 +1,4 @@
-package dev.sdp.plugin.connect
+package dev.sdp.connect
 
 import java.util.UUID
 import java.util.concurrent.TimeUnit

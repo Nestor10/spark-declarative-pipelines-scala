@@ -1,4 +1,4 @@
-package dev.sdp.plugin
+package dev.sdp.connect
 
 import scala.jdk.CollectionConverters.*
 

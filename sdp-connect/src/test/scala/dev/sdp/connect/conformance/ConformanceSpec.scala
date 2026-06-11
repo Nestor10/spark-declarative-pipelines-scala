@@ -1,4 +1,4 @@
-package dev.sdp.plugin.conformance
+package dev.sdp.connect.conformance
 
 import java.nio.charset.StandardCharsets.UTF_8
 
@@ -28,7 +28,7 @@ object ConformanceSpec extends ZIOSpecDefault:
       assertTrue(
         snapshot.isDefined,
         snapshot.contains(live),
-      ) ?? s"Inventory drift detected (or snapshot missing). If this follows a deliberate Spark artifact upgrade, regenerate: sbt 'sbtSparkPipelines/Test/runMain dev.sdp.plugin.conformance.RenderInventory sbt-spark-pipelines/src/test/resources${SnapshotResource}' and review the git diff."
+      ) ?? s"Inventory drift detected (or snapshot missing). If this follows a deliberate Spark artifact upgrade, regenerate: sbt 'sdpConnect/Test/runMain dev.sdp.connect.conformance.RenderInventory sdp-connect/src/test/resources${SnapshotResource}' and review the git diff."
     },
     test("every Relation oneof entry is triaged into a tier") {
       assertTrue(ConnectTiers.untriagedRelationEntries.isEmpty) ??

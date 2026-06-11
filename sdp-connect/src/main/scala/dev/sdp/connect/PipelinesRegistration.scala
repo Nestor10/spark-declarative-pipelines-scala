@@ -1,4 +1,4 @@
-package dev.sdp.plugin.connect
+package dev.sdp.connect
 
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -6,7 +6,6 @@ import java.util.concurrent.TimeUnit
 import scala.jdk.CollectionConverters.*
 
 import dev.sdp.core.{PipelineManifest, RunProgress}
-import dev.sdp.plugin.PipelineProtoEncoder
 import io.grpc.{ManagedChannel, ManagedChannelBuilder, StatusRuntimeException}
 import org.apache.spark.connect.proto as sc
 import zio.*

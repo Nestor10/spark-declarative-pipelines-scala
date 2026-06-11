@@ -3,6 +3,8 @@ package dev.sdp.plugin
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Files
 
+import dev.sdp.connect.{AlgebraProtoEncoder, CatalogSeeder, PipelinesRegistration, PlanAnalysis}
+import dev.sdp.connect.app.ValidationRendering
 import sbt.*
 import sbt.Keys.*
 import sbt.CacheImplicits.given
@@ -117,8 +119,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
 
       SdpZioBridge.assemble(fragments) match
         case Left(errors) =>
-          val rendered = errors.map(e => s"  - ${e.describe}").mkString("\n")
-          sys.error(s"SDP pipeline graph is invalid:\n$rendered")
+          sys.error(ValidationRendering.invalidGraphMessage(errors.toList))
 
         case Right(manifest) =>
           val out = targetDir.toPath.resolve("sdp").resolve("pipeline.sdpm")
@@ -193,7 +194,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
       else
         val (host, port) = parseEndpoint(sdpConnectEndpoint.value)
         log.info(s"sdp: seeding ${statements.size} statement(s) on ${sdpConnectEndpoint.value}")
-        SdpZioBridge.run(connect.CatalogSeeder.run(host, port, statements)) match
+        SdpZioBridge.run(CatalogSeeder.run(host, port, statements)) match
           case Left(err) => sys.error(s"sdp: seeding failed — ${err.describe}")
           case Right(_)  => log.info(s"sdp: seeded ${statements.size} statement(s).")
     },
@@ -212,7 +213,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
 
       val ownEntries = SdpZioBridge.assemble(fragments) match
         case Left(errors) =>
-          sys.error(s"sdp: cannot import schemas from an invalid pipeline:\n${errors.map(e => s"  - ${e.describe}").mkString("\n")}")
+          sys.error(s"sdp: cannot import schemas from an invalid pipeline:\n${ValidationRendering.renderErrors(errors.toList)}")
         case Right(manifest) =>
           import dev.sdp.core.algebra.SchemaCheck
           val order    = manifest.toGraph.topologicalSort.getOrElse(Nil)
@@ -230,7 +231,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
           val (host, port) = parseEndpoint(sdpConnectEndpoint.value)
           tables.map { table =>
             SdpZioBridge.run(
-              connect.PlanAnalysis.analyzeSchema(
+              PlanAnalysis.analyzeSchema(
                 host,
                 port,
                 AlgebraProtoEncoder.relation(
@@ -308,7 +309,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
     // the cancel unblocks the parked gRPC pull so the loser interrupts cleanly
     // (a plain `.timeout` would deadlock waiting on the parked `next()`).
     val effect = zio.ZIO.scoped {
-      connect.PipelinesRegistration.register(host, port, manifest, storage, dry).flatMap { handle =>
+      PipelinesRegistration.register(host, port, manifest, storage, dry).flatMap { handle =>
         val drain = handle.progress
           .tap(p => zio.ZIO.succeed(log.info(s"sdp:   • ${p.raw}")))
           .runDrain
@@ -358,7 +359,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
     )
 
     val cycle = zio.ZIO.scoped {
-      connect.PipelinesRegistration.register(host, port, manifest, storage, dry = false).flatMap { handle =>
+      PipelinesRegistration.register(host, port, manifest, storage, dry = false).flatMap { handle =>
         handle.progress
           .tap(p => zio.ZIO.succeed(log.info(s"sdp:   • ${p.raw}")))
           .runDrain
