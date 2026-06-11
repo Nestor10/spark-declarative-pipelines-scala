@@ -2,29 +2,35 @@ package dev.sdp.dsl
 
 import scala.NamedTuple.AnyNamedTuple
 
-/** F14a spike: typed column references over a named-tuple schema.
+import dev.sdp.core.algebra.Ex
+
+/** Runtime port of `dev.sdp.dsl.TypedCols` (TypedCols.scala): typed column
+  * references over a named-tuple schema.
   *
-  * `cols[S]` gives a phantom handle whose fields are exactly `S`'s labels,
-  * each typed `ExArg` — so `c.amount` compiles iff `amount` is a column of
-  * `S`, autocompletes in the IDE, and desugars to
-  * `selectDynamic("amount")`, which the flow extractor reads as a string
-  * literal. Wrong names are *type errors* before extraction even runs.
+  * `cols[S]` gives a handle whose fields are exactly `S`'s labels, each typed
+  * [[Column]] — so `c.amount` compiles iff `amount` is a column of `S`,
+  * autocompletes, and yields `Column(Ex.Col("amount"))`. Wrong names are *type
+  * errors* (the `Selectable` field set is computed by the type-level
+  * `NamedTuple.Map`). This preserves the macro frontend's compile-time
+  * field-name checking — the one place a small `inline` is kept in the runtime
+  * world (allowed and expected per the M1 brief).
+  *
+  * Unlike the macro version (whose `selectDynamic` is a phantom read back out
+  * of the AST as a string literal), this one builds the runtime `Column`
+  * directly: `selectDynamic("amount")` returns `Column(Ex.Col("amount"))`. So
+  * `c.amount` and `col("amount")` are render-identical, exactly as in the macro.
   *
   * {{{
   * type Orders = (order_id: Long, amount: Long)
-  * streamingTableFrom("gold") {
+  * streamingTable("gold") {
   *   val c = cols[Orders]
   *   stream.table("orders").where(c.amount > lit(0L)).select(c.order_id)
   * }
   * }}}
-  *
-  * Schema types are ordinary type aliases today; F14b generates them from
-  * the live catalog and the pipeline's own inferred schemas
-  * (`sdpImportSchemas`).
   */
 final class TypedCols[S <: AnyNamedTuple] extends Selectable:
-  type Fields = NamedTuple.Map[S, [X] =>> ExArg]
-  def selectDynamic(name: String): ExArg = ExArg()
+  type Fields = NamedTuple.Map[S, [X] =>> Column]
+  def selectDynamic(name: String): Column = Column(Ex.Col(name))
 
 /** Phantom handle for `S`'s columns; see [[TypedCols]]. */
 def cols[S <: AnyNamedTuple]: TypedCols[S] = TypedCols[S]()

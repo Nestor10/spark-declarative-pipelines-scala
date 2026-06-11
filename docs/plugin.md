@@ -3,9 +3,10 @@
 > **Status: pre-release.** Manifest generation and Spark Connect push are both
 > functional and tested end-to-end against Spark 4.1.2.
 
-Generates a validated pipeline manifest from your compiled Scala sources at
-build time. Invalid graphs **fail the build** — cycles, duplicates, and
-dangling references never reach a cluster.
+Generates a validated pipeline manifest from your pipeline object. Invalid
+graphs **fail the build** — cycles, duplicates, and dangling references never
+reach a cluster. The plugin is a dev-loop convenience over the same code the
+`SdpApp` uber-jar runner uses in production (D10).
 
 ## Setup
 
@@ -17,37 +18,74 @@ addSbtPlugin("dev.sdp" % "sbt-spark-pipelines" % <version>)
 lazy val myPipelines = (project in file("."))
   .enablePlugins(dev.sdp.plugin.SparkPipelinesPlugin)
   .settings(
-    scalaVersion := "3.8.4",
-    libraryDependencies += "dev.sdp" %% "sdp-runtime-dsl" % <version>,
+    scalaVersion     := "3.8.4",
+    // The object that exposes `def pipeline: List[GraphFragment]`
+    // (typically `object X extends SdpApp`). The plugin loads it and calls it.
+    sdpPipelineClass := "com.example.Warehouse",
   )
 ```
 
-The plugin does not auto-activate (`noTrigger`); enable it per project.
+You write **one** version (the `addSbtPlugin` line). The matching
+`sdp-runtime-dsl` (the authoring surface) and `sdp-connect` (`SdpApp` + the
+Connect client) are injected automatically, in lockstep with the plugin —
+override with `sdpRuntimeVersion` only for local testing. The plugin does not
+auto-activate (`noTrigger`); enable it per project.
+
+See [the DSL doc](dsl.md#assembling-a-pipeline--pipeline-and-sdpapp) for how to
+write the pipeline object.
 
 ## Tasks and settings
 
 | Key | Type | Purpose |
 |---|---|---|
-| `sdpManifest` | task | Compile, discover pipeline fragments, validate the DAG, write `<target>/sdp/pipeline.sdpm` |
-| `sdpPush` | task | Register the graph with the remote `PipelinesHandler`; validate (dry) or run per `sdpDryRun` |
+| `sdpPipelineClass` | setting | FQN of your pipeline object (`object X extends SdpApp`, or any object with `def pipeline: List[GraphFragment]`). **Required.** |
+| `sdpManifest` | task | Evaluate the pipeline object, validate the DAG, write `<target>/sdp/pipeline.sdpm` |
+| `sdpValidate` | task | Assemble + validate, print the verdict — **no file output**. The offline inner-loop target for `~sdpValidate` |
+| `sdpDryRun` | task | Register the graph server-side in validate-only mode (dry run). Target for `~sdpDryRun` |
+| `sdpPush` | task | Register the graph with the remote `PipelinesHandler`; validate (dry) or run per `sdpPushDryRun` |
 | `sdpRun` | task | Register **and execute** the graph (dry = false, always) — materializes tables; one-shot run with progress |
 | `sdpWatch` | task | Re-trigger the pipeline every `sdpWatchInterval`s (Ctrl-C to stop) — client-side "continuous": each cycle is a triggered run whose AvailableNow resumes from the checkpoint and picks up new data (the server has no true continuous mode) |
 | `sdpSeed` | task | Run `sdpSeedStatements` (DDL/DML) against the server over Spark Connect — a local fixture to create + populate the source/catalog tables an `externalTable` reads, so a full run resolves them |
 | `sdpSeedStatements` | setting | SQL statements `sdpSeed` executes (e.g. `CREATE OR REPLACE TABLE bronze.orders USING delta AS SELECT …`). Default empty |
 | `sdpConnectEndpoint` | setting | gRPC endpoint, `sc://host:port` (default `sc://localhost:15002`) |
 | `sdpStorageRoot` | setting | Checkpoint/metadata root — absolute URI with scheme (default `file:///tmp/sdp/<project>`) |
-| `sdpDryRun` | setting | `true` (default): server validates only, no flows execute; `false`: really run |
+| `sdpPushDryRun` | setting | `true` (default): `sdpPush` validates only, no flows execute; `false`: `sdpPush` really runs. (`sdpDryRun` always runs dry; `sdpRun` always runs for real.) |
 | `sdpImportSchemas` | task | Generate named-tuple schema aliases (for `cols[S]`) from the pipeline's inferred shapes + remote catalog tables |
 | `sdpSchemasFile` | setting | Output for generated aliases (default `src/main/scala/sdp/schemas/PipelineSchemas.scala` — checked in, diffs reviewable) |
 | `sdpSchemasPackage` | setting | Package of the generated aliases (default `sdp.schemas`) |
 | `sdpCatalogTables` | setting | Remote tables to import (schema via the server's analyzer), e.g. `Seq("sales.orders")` |
 
+## The inner loop — `~sdpValidate` / `~sdpDryRun`
+
+For fast feedback while authoring, run a validate task under sbt's file watch:
+
+```
+sbt:myPipelines> ~sdpValidate
+```
+
+`sdpValidate` evaluates the pipeline object, assembles + validates the graph,
+and prints a one-line verdict — **no file is written, no server is contacted**.
+Every save re-runs it, so a cycle or dangling reference shows up in the terminal
+within seconds. It's the offline equivalent of `app.jar validate`.
+
+When you also want the server's analyzer to vet the graph each save, watch the
+dry run instead:
+
+```
+sbt:myPipelines> ~sdpDryRun
+```
+
+`sdpDryRun` builds the manifest and registers the graph server-side in
+validate-only mode (it never materializes tables) — catching anything only the
+live Catalyst analyzer knows (unresolvable functions, type mismatches).
+
 ## What `sdpPush` does
 
 Reads the manifest from `sdpManifest`, then drives the registration
 sequence over gRPC: `CreateDataflowGraph` → one `DefineOutput`/`DefineFlow`
-per dataset → `StartRun`. With `sdpDryRun := true` the server's Catalyst
-analyzer fully resolves and validates the graph without executing anything:
+per dataset → `StartRun`. With `sdpPushDryRun := true` (the default) the server's
+Catalyst analyzer fully resolves and validates the graph without executing
+anything:
 
 ```
 [info] sdp: pushing 3 dataset(s) to sc://localhost:15002 (dry=true, storage=file:///tmp/sdp/demo)
@@ -62,7 +100,7 @@ reports the server's own diagnostic.
 
 `sdpPush` defaults to dry (validate only). To actually materialize
 tables, use `sdpRun` (always `dry = false` — a dedicated task rather
-than flipping `sdpDryRun`, which avoids an sbt thin-client `set` quirk). The
+than flipping `sdpPushDryRun`, which avoids an sbt thin-client `set` quirk). The
 server runs a *triggered* execution: batch datasets compute once and the run
 terminates, with flow progress surfaced live:
 
@@ -118,10 +156,16 @@ container*, not the plugin):
 
 ## What `sdpManifest` does
 
-1. Compiles the project (if needed).
-2. Scans the compiled `.tasty` files for fragments embedded by the
-   [DSL macros](dsl.md) — **without classloading or executing your code**.
-3. Merges all fragments, validates the full graph on an isolated ZIO runtime.
+1. Compiles the project (it depends on `Runtime / fullClasspath`).
+2. **Classload-eval** (D10): builds an isolated, child-first `URLClassLoader`
+   over the project's runtime classpath, loads `sdpPipelineClass`, calls
+   `pipeline`, and renders each fragment to a STRING via
+   `dev.sdp.core.PipelineExport.encodeAll`. The fragment string is the *only*
+   thing that crosses the classloader boundary — the same contract the earlier
+   TASTy embedding used — so the loader is fully isolated and `close()`d in a
+   `finally`. (No macro, no TASTy scan, no `inline`.)
+3. Decodes the strings, merges all fragments, validates the full graph on an
+   isolated ZIO runtime.
 4. Writes the canonical manifest, or fails the build listing **every** problem:
 
 ```
@@ -132,21 +176,22 @@ container*, not the plugin):
 
 ## Behavior guarantees (all covered by scripted tests)
 
-- **Incremental correctness.** Deleting or renaming a source file removes its
-  datasets from the next manifest — no `clean` ever required. Discovery rides
-  on `.tasty` files, whose lifecycle Zinc owns.
-- **Declaration-based discovery.** A dataset declared inside a method that is
-  never called is still part of the graph. Declarative semantics: writing the
-  declaration registers it.
+- **Incremental correctness.** Editing the pipeline (adding or dropping a
+  dataset) reshapes the next manifest with no `clean` ever required — the cache
+  is keyed on the runtime classpath (compiled products + deps), so any source
+  change invalidates precisely.
+- **Single source of truth.** The graph is exactly what `pipeline` returns —
+  you list every dataset explicitly, so what runs in the dev loop is what the
+  `SdpApp` uber jar runs in production (the plugin and the jar evaluate the
+  same `pipeline` value).
 - **Cache-clean.** The task participates in sbt 2.0's action cache: unchanged
-  inputs replay from cache (`cache 100%`) with byte-identical output;
-  changing any compiled source invalidates precisely.
-- **Build-JVM hygiene.** No classloaders are created over project code, and
-  the ZIO runtime is task-scoped and torn down per invocation — safe for
-  long-lived sbt servers.
+  inputs replay from cache (`cache 100%`) with byte-identical output.
+- **Build-JVM hygiene.** The child classloader is closed per invocation and the
+  ZIO runtime is task-scoped and torn down per invocation — safe for long-lived
+  sbt servers. No ZIO runs inside the child loader; evaluation is plain code.
 
 ## The manifest artifact
 
-`<target>/sdp/pipeline.sdpm`, format `sdp-manifest/1` — canonical and
+`<target>/sdp/pipeline.sdpm`, format `sdp-manifest/2` — canonical and
 byte-stable (sorted entries, percent-encoded fields, no timestamps). See
 [the DSL doc](dsl.md#the-manifest) for the format itself.

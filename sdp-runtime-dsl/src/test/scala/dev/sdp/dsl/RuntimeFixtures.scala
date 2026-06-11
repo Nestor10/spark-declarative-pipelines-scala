@@ -1,19 +1,18 @@
-package dev.sdp.dsl.runtime
+package dev.sdp.dsl
 
 import dev.sdp.core.GraphFragment
-import dev.sdp.dsl.*
 import dev.sdp.dsl.functions.*
 
-/** The SAME Warehouse bodies as [[RuntimeFixtures]], built with the MACRO
-  * frontend (`dev.sdp.dsl.*`). Obtained exactly as WarehouseDogfoodSpec does:
-  * the `streamingTable`/`materializedView`/`externalTable` inline entry points
-  * expand at compile time into embedded `GraphFragment`s.
+/** The Warehouse example built with the runtime plan-builder DSL.
   *
-  * The bodies are line-for-line identical to RuntimeFixtures, with the
-  * `cols[S]` typed-column substitution applied on BOTH sides (plain `col(...)`)
-  * so the comparison is body-for-body, import-only difference.
+  * SUBSTITUTION (noted in SPIKE_NOTES.md): `orders_enriched`'s reference body
+  * uses `cols[(order_id: Long, amount: Long, state: String)]` typed columns
+  * (`c.amount`). The runtime builder can't synthesize `selectDynamic` fields
+  * without a macro, so we use plain `col("amount")` etc. Because `c.amount`
+  * lowers to `Ex.Col("amount")` in the macro too, the rendered Rel is
+  * identical — the substitution is render-invisible.
   */
-object MacroFixtures:
+object RuntimeFixtures:
 
   val bronzeOrders: GraphFragment         = externalTable("bronze.orders")
   val bronzeCustomerOrders: GraphFragment = externalTable("bronze.customer_orders")
@@ -37,6 +36,8 @@ object MacroFixtures:
   }
 
   val ordersEnriched: GraphFragment = materializedView("orders_enriched") {
+    // reference uses cols[(order_id: Long, amount: Long, state: String)]; we
+    // substitute plain col(...) — render-identical (see header note).
     spark
       .table("bronze.orders")
       .where(col("amount") > lit(0L))

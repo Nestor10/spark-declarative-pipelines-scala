@@ -5,8 +5,8 @@ import dev.sdp.dsl.*
 
 object Rates:
   /** Schema declared at the source leaf; everything downstream is inferred —
-    * and `sdpImportSchemas` turns the inferred shapes into named-tuple
-    * aliases for `cols[...]`.
+    * and `sdpImportSchemas` turns the inferred shapes into named-tuple aliases
+    * for `cols[...]`. (Inference runs over the evaluated flow's algebra tree.)
     */
   val rates: GraphFragment = streamingTable("rates") {
     spark.readStream

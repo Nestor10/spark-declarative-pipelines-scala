@@ -5,8 +5,8 @@ import dev.sdp.dsl.*
 
 object Silver:
   /** Streaming join of the bronze stream against the customer dimension —
-    * written in the fluent flow language, extracted at compile time. The
-    * lineage edges in the manifest come from what this body actually reads.
+    * written in the runtime flow builder. The lineage edges in the manifest
+    * come from what this body actually reads (`stream`/`read.table`).
     */
   val orders: GraphFragment = streamingTable("silver_orders") {
     val enriched = spark.readStream

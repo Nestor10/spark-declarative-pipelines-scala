@@ -1,4 +1,4 @@
-package dev.sdp.dsl.runtime
+package dev.sdp.dsl
 
 import dev.sdp.core.algebra.*
 

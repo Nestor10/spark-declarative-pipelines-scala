@@ -1,10 +1,12 @@
 package dev.sdp.plugin
 
+import java.net.{URL, URLClassLoader}
 import java.nio.charset.StandardCharsets.UTF_8
-import java.nio.file.Files
+import java.nio.file.{Files, Path}
 
 import dev.sdp.connect.{AlgebraProtoEncoder, CatalogSeeder, PipelinesRegistration, PlanAnalysis}
 import dev.sdp.connect.app.ValidationRendering
+import dev.sdp.core.GraphFragment
 import sbt.*
 import sbt.Keys.*
 import sbt.CacheImplicits.given
@@ -12,15 +14,24 @@ import xsbti.{HashedVirtualFileRef, VirtualFile}
 
 /** The sbt 2.0 AutoPlugin for Spark Declarative Pipelines.
   *
-  * `sdpManifest` is the heart: it scans the compiled `.tasty` output
-  * for macro-embedded fragments (no classloading of project code — see
-  * `TastyFragmentScanner`), validates the assembled graph on an isolated ZIO
-  * runtime, and writes the canonical manifest. An invalid graph **fails the
-  * build** with every accumulated error.
+  * `sdpManifest` is the heart: it evaluates the user's pipeline object
+  * (`sdpPipelineClass`) in a child classloader over the project's runtime
+  * classpath, validates the assembled graph on an isolated ZIO runtime, and
+  * writes the canonical manifest. An invalid graph **fails the build** with
+  * every accumulated error.
+  *
+  * Fragment discovery is classload-eval (D10, replacing the earlier TASTy
+  * scan): the DSL is now a plain runtime plan-builder, so the plugin loads the
+  * pipeline object, calls `pipeline`, and renders each fragment to a STRING via
+  * `dev.sdp.core.PipelineExport.encodeAll`. The string is the only thing that
+  * crosses the classloader boundary — exactly the contract the TASTy embedding
+  * used — so the child loader is fully isolated (no parent delegation for
+  * user/sdp classes) and `loader.close()` runs in a finally. See
+  * [[evalPipelineFragments]].
   *
   * The task is cached (`Def.cachedTask`): its inputs are the content-hashed
   * compiled products and classpath, its output is declared to the action
-  * cache, so unchanged sources mean no rescan — and the manifest is
+  * cache, so unchanged sources mean no re-eval — and the manifest is
   * restorable from local/remote cache.
   */
 object SparkPipelinesPlugin extends AutoPlugin {
@@ -35,16 +46,29 @@ object SparkPipelinesPlugin extends AutoPlugin {
     val sdpStorageRoot = settingKey[String](
       "Pipeline checkpoint/metadata root — absolute URI with scheme (file://, s3a://, ...)."
     )
-    val sdpDryRun = settingKey[Boolean](
-      "When true (default), sdpPush only validates server-side; no flows execute."
+    val sdpPushDryRun = settingKey[Boolean](
+      "When true (default), sdpPush only validates server-side; no flows execute. (The dedicated " +
+        "`sdpDryRun` task always runs dry regardless of this setting; `sdpRun` always runs for real.)"
     )
     val sdpRunTimeout = settingKey[Int](
       "Max seconds to wait for a run before detaching. Batch/terminating streaming runs " +
         "finish well under this; a never-terminating streaming source (e.g. rate) hits it and " +
         "detaches gracefully rather than wedging the build. Default 600."
     )
+    val sdpPipelineClass = settingKey[String](
+      "Fully-qualified name of the user's pipeline object — an `object X extends SdpApp`, or any " +
+        "object exposing `def pipeline: List[GraphFragment]`. The plugin loads it in a child " +
+        "classloader over the project's runtime classpath, calls `pipeline`, and assembles the graph."
+    )
     val sdpManifest = taskKey[HashedVirtualFileRef](
-      "Scan compiled .tasty for pipeline fragments, validate the DAG, write the manifest."
+      "Evaluate the pipeline object, validate the DAG, write the manifest."
+    )
+    val sdpValidate = taskKey[Unit](
+      "Assemble + validate the pipeline graph and print the verdict — no file output. The offline " +
+        "inner-loop target for `~sdpValidate`."
+    )
+    val sdpDryRun = taskKey[Unit](
+      "Register the graph server-side in validate-only mode (dry run) — the target for `~sdpDryRun`."
     )
     val sdpPush = taskKey[Unit](
       "Register the SDP graph with the remote PipelinesHandler; validate (dry) or run per sdpDryRun."
@@ -80,9 +104,9 @@ object SparkPipelinesPlugin extends AutoPlugin {
       "Run sdpSeedStatements against the Spark Connect server (local catalog-fixture seeding)."
     )
     val sdpRuntimeVersion = settingKey[String](
-      "Version of the dev.sdp %% sdp-runtime-dsl library to inject. Defaults to the plugin's own " +
-        "version (lockstep — the plugin and DSL share a TASTy/wire contract). Override only for " +
-        "local testing or an emergency hotfix."
+      "Version of the dev.sdp %% sdp-runtime-dsl AND sdp-connect libraries to inject. Defaults to " +
+        "the plugin's own version (lockstep — the plugin, DSL and Connect client share the fragment " +
+        "string + wire contract). Override only for local testing or an emergency hotfix."
     )
   }
 
@@ -92,30 +116,38 @@ object SparkPipelinesPlugin extends AutoPlugin {
     sdpConnectEndpoint := "sc://localhost:15002",
 
     // Version lockstep: the consumer writes ONE version (the addSbtPlugin
-    // line); the matching runtime DSL is injected automatically. `%%` adds
-    // the Scala 3 `_3` suffix, matching the published `sdp-runtime-dsl_3`.
-    // Appending (+=) never clobbers the consumer's other deps, and the
-    // setting key is the documented override (or `dependencyOverrides`).
+    // line); the matching runtime DSL AND Connect client are injected
+    // automatically. `%%` adds the Scala 3 `_3` suffix, matching the published
+    // `sdp-runtime-dsl_3` / `sdp-connect_3`. Appending (+=) never clobbers the
+    // consumer's other deps, and the setting key is the documented override
+    // (or `dependencyOverrides`).
+    //   - sdp-runtime-dsl: the authoring surface (`table`/`view`/`functions`).
+    //   - sdp-connect: `SdpApp` (users extend it) + the Connect client. Needed
+    //     on the consumer's classpath both so `object X extends SdpApp` compiles
+    //     and so the plugin's child-loader eval can resolve SdpApp/PipelineExport.
     sdpRuntimeVersion := SdpBuildInfo.version,
     libraryDependencies += "dev.sdp" %% "sdp-runtime-dsl" % sdpRuntimeVersion.value,
+    libraryDependencies += "dev.sdp" %% "sdp-connect"     % sdpRuntimeVersion.value,
+
+    sdpPipelineClass := "",
 
     sdpManifest := (Def.cachedTask {
       val log  = streams.value.log
       val conv = fileConverter.value
 
-      // Cache inputs: content-hashed compiled products (the .tasty we scan)
-      // and the dependency classpath (resolution context). Both are
-      // Seq[Attributed[HashedVirtualFileRef]] in sbt 2 — any change to
-      // compiled output changes the hash and invalidates this task.
-      val products  = (Compile / exportedProducts).value
-      val classpath = (Compile / fullClasspath).value
+      // Cache inputs: the full RUNTIME classpath, content-hashed. This is the
+      // exact set of jars/dirs the child loader evaluates over (it includes the
+      // project's own compiled products via exportedProducts), so any change to
+      // the pipeline code OR its deps changes the hash and invalidates this
+      // task. Seq[Attributed[HashedVirtualFileRef]] in sbt 2.
+      val classpath = (Runtime / fullClasspath).value
       val targetDir = (Compile / target).value
+      val fqn       = sdpPipelineClass.value
 
-      val targets  = products.toList.map(entry => conv.toPath(entry.data))
-      val depPaths = classpath.toList.map(entry => conv.toPath(entry.data))
+      val cpPaths   = classpath.toList.map(entry => conv.toPath(entry.data))
 
-      val fragments = TastyFragmentScanner.scan(targets, depPaths)
-      log.info(s"sdp: discovered ${fragments.size} pipeline fragment(s)")
+      val fragments = evalPipelineFragments(fqn, cpPaths, log)
+      log.info(s"sdp: evaluated ${fragments.size} pipeline fragment(s) from $fqn")
 
       SdpZioBridge.assemble(fragments) match
         case Left(errors) =>
@@ -143,7 +175,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
         endpoint = sdpConnectEndpoint.value,
         storage = sdpStorageRoot.value,
         manifestRef = sdpManifest.value,
-        dry = sdpDryRun.value,
+        dry = sdpPushDryRun.value,
         timeoutSeconds = sdpRunTimeout.value,
       )
     },
@@ -165,6 +197,34 @@ object SparkPipelinesPlugin extends AutoPlugin {
       )
     },
 
+    // Offline inner-loop verdict: evaluate + assemble + validate, print the
+    // result, write NOTHING. Uncached so `~sdpValidate` re-runs every save.
+    // Shares the classload-eval path with sdpManifest (the boundary is strings).
+    sdpValidate := Def.uncached {
+      val log = streams.value.log
+      val conv = fileConverter.value
+      val cpPaths = (Runtime / fullClasspath).value.toList.map(entry => conv.toPath(entry.data))
+      val fragments = evalPipelineFragments(sdpPipelineClass.value, cpPaths, log)
+      SdpZioBridge.assemble(fragments) match
+        case Left(errors)   => sys.error(ValidationRendering.invalidGraphMessage(errors.toList))
+        case Right(manifest) =>
+          log.info(s"sdp: pipeline valid — ${manifest.nodes.size} dataset(s), ${manifest.flows.size} flow(s).")
+    },
+
+    // Dry run: register the graph server-side in validate-only mode. Target for
+    // `~sdpDryRun`. Reuses the (cached) manifest and the shared push path.
+    sdpDryRun := Def.uncached {
+      pushOrRun(
+        log = streams.value.log,
+        conv = fileConverter.value,
+        endpoint = sdpConnectEndpoint.value,
+        storage = sdpStorageRoot.value,
+        manifestRef = sdpManifest.value,
+        dry = true,
+        timeoutSeconds = sdpRunTimeout.value,
+      )
+    },
+
     sdpWatch := Def.uncached {
       watchLoop(
         log = streams.value.log,
@@ -177,7 +237,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
     },
 
     sdpStorageRoot   := s"file:///tmp/sdp/${name.value}",
-    sdpDryRun        := true,
+    sdpPushDryRun    := true,
     sdpRunTimeout    := 600,
     sdpWatchInterval := 30,
 
@@ -205,11 +265,11 @@ object SparkPipelinesPlugin extends AutoPlugin {
       val log  = streams.value.log
       val conv = fileConverter.value
 
-      // (a) the pipeline's own datasets, shapes inferred from compiled flows
-      val _        = (Compile / compile).value
-      val classDir = (Compile / classDirectory).value.toPath
-      val depPaths = (Compile / dependencyClasspath).value.toList.map(e => conv.toPath(e.data))
-      val fragments = TastyFragmentScanner.scan(List(classDir), depPaths)
+      // (a) the pipeline's own datasets, shapes inferred from compiled flows.
+      // Same classload-eval as sdpManifest: evaluate the pipeline object over
+      // the runtime classpath, get fragment strings back across the boundary.
+      val cpPaths   = (Runtime / fullClasspath).value.toList.map(e => conv.toPath(e.data))
+      val fragments = evalPipelineFragments(sdpPipelineClass.value, cpPaths, log)
 
       val ownEntries = SdpZioBridge.assemble(fragments) match
         case Left(errors) =>
@@ -271,6 +331,85 @@ object SparkPipelinesPlugin extends AutoPlugin {
       case "timestamp" => ColType.Timestamp
       case "date"      => ColType.Date
       case _           => ColType.Unknown
+
+  /** Evaluate the user's pipeline object in an isolated child classloader and
+    * recover its fragments as plain `GraphFragment`s — the D10 classload-eval
+    * that replaced the TASTy scan.
+    *
+    * The cross-loader boundary is the fragment STRING (the same contract the
+    * TASTy embedding used), so the child loader is built child-FIRST with the
+    * PLATFORM loader as parent — i.e. NO delegation to the plugin's own loader
+    * for user/sdp classes. That total isolation is safe precisely because
+    * nothing but `String[]` crosses back: the child's `GraphFragment` and the
+    * plugin's `GraphFragment` are different `Class`es and never meet.
+    *
+    * Reflection call-chain (all inside the child loader):
+    *   1. `loader.loadClass("<fqn>$")`            — the user object's module class
+    *   2. `.getField("MODULE$").get(null)`        — the singleton instance
+    *   3. `.getMethod("pipeline").invoke(module)` — the `List[GraphFragment]` value
+    *   4. `loader.loadClass("dev.sdp.core.PipelineExport$").getField("MODULE$")`
+    *   5. `.getMethod("encodeAll", classOf[Object]).invoke(export, pipelineValue)`
+    *        → `Array[String]` (crosses the boundary as bootstrap-loaded Strings)
+    *   6. plugin-side: `GraphFragment.parse` each string into the plugin's own
+    *      `GraphFragment`, feeding the existing assembly/validation flow.
+    *
+    * `loader.close()` runs in a finally so a warm sbt server never leaks loaders.
+    * A malformed boundary string is a defect (bug in PipelineExport/codec).
+    */
+  private def evalPipelineFragments(
+      fqn: String,
+      classpath: List[Path],
+      log: sbt.util.Logger,
+  ): List[GraphFragment] =
+    if fqn.trim.isEmpty then
+      sys.error(
+        "sdp: sdpPipelineClass is not set. Point it at your pipeline object, e.g. " +
+          "`sdpPipelineClass := \"com.example.MyPipeline\"` (an `object … extends SdpApp`, or any " +
+          "object with `def pipeline: List[GraphFragment]`)."
+      )
+
+    val urls: Array[URL] = classpath.map(_.toUri.toURL).toArray
+    // Child-first, parent = platform loader: JDK classes resolve, but user/sdp
+    // classes do NOT delegate to the plugin loader — full isolation.
+    val loader = new URLClassLoader(urls, ClassLoader.getPlatformClassLoader)
+    try
+      val moduleClass = loader.loadClass(fqn + "$")
+      val module      = moduleClass.getField("MODULE$").get(null)
+      val pipelineVal = moduleClass.getMethod("pipeline").invoke(module)
+
+      val exportClass = loader.loadClass("dev.sdp.core.PipelineExport$")
+      val exportMod   = exportClass.getField("MODULE$").get(null)
+      val encoded     = exportClass
+        .getMethod("encodeAll", classOf[Object])
+        .invoke(exportMod, pipelineVal)
+        .asInstanceOf[Array[String]]
+
+      log.debug(s"sdp: classload-eval of $fqn produced ${encoded.length} fragment string(s)")
+
+      encoded.toList.map { line =>
+        GraphFragment.parse(line) match
+          case Right(frag) => frag
+          case Left(bad) =>
+            throw new IllegalStateException(
+              s"sdp: PipelineExport produced an undecodable fragment line: '$bad'. " +
+                "This is a bug in the sdp string codec (plugin and runtime versions out of lockstep?)."
+            )
+      }
+    catch
+      case e: ClassNotFoundException =>
+        sys.error(
+          s"sdp: could not load pipeline object '$fqn' from the project classpath. " +
+            s"Check sdpPipelineClass and that the object compiles. (${e.getMessage})"
+        )
+      case e: NoSuchMethodException =>
+        sys.error(
+          s"sdp: '$fqn' has no `def pipeline` returning List[GraphFragment]. " +
+            s"Extend SdpApp or expose `def pipeline`. (${e.getMessage})"
+        )
+      case e: java.lang.reflect.InvocationTargetException =>
+        val cause = Option(e.getCause).getOrElse(e)
+        sys.error(s"sdp: evaluating '$fqn'.pipeline failed — ${cause.getClass.getName}: ${cause.getMessage}")
+    finally loader.close()
 
   /** `sc://host:port` → (host, port), with a readable failure. */
   private def parseEndpoint(endpoint: String): (String, Int) =

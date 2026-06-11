@@ -8,9 +8,12 @@
 > checkSchemas
 > compile
 
-# Zinc incremental correctness: deleting a source must drop its fragments
-# from the next manifest WITHOUT a clean. This is the property that killed
-# the sidecar-file design — here it must just work.
+# Incremental correctness (D10 / classload-eval): dropping a dataset from the
+# pipeline must drop its fragments from the next manifest WITHOUT a clean. The
+# author removes Silver.orders from the pipeline list and deletes its source;
+# recompile + re-eval reflects it. (The classpath-keyed cache invalidates on
+# the changed compiled products.)
+$ copy-file extra/WarehouseNoSilver.scala src/main/scala/pipelines/Warehouse.scala
 $ delete src/main/scala/pipelines/Silver.scala
 > sdpManifest
 > checkManifestAfterDelete

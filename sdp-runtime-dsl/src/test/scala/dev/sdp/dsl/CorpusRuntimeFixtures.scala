@@ -1,18 +1,17 @@
-package dev.sdp.dsl.runtime
+package dev.sdp.dsl
 
 import scala.language.implicitConversions // InlineDf → Df (createDataFrame without .toDF)
 
 import dev.sdp.core.GraphFragment
-import dev.sdp.dsl.runtime.*
-import dev.sdp.dsl.runtime.functions.*
+import dev.sdp.dsl.functions.*
 
-/** Corpus of flow bodies built with the RUNTIME builder, one per construct
-  * exercised by `dev.sdp.dsl.FlowLanguageSpec` and `WarehouseDogfoodSpec`.
-  * Paired body-for-body with [[CorpusMacroFixtures]] (only the import differs);
-  * `EquivalenceSpec` asserts `RelCodec.render` equality per construct.
+/** Corpus of flow bodies built with the runtime builder, one per language
+  * construct. `GoldenRenderSpec` asserts `RelCodec.render` of each against the
+  * frozen block in `golden-renders.txt`.
   *
-  * Each `val` name matches a key in `EquivalenceSpec.corpus`; the same body
-  * appears in CorpusMacroFixtures under the same name.
+  * Each `val` name is a key in [[GoldenCorpus]] (which pairs it with its golden
+  * `<name>/<flowName>` block). These bodies were originally proven
+  * render-identical to the (now-deleted) macro frontend during the D10 cutover.
   */
 object CorpusRuntimeFixtures:
 

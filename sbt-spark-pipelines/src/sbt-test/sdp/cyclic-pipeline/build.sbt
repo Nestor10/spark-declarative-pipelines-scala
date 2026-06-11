@@ -6,4 +6,5 @@ lazy val root = (project in file("."))
     name         := "cyclic-pipeline",
     scalaVersion := "3.8.4",
     libraryDependencies += "dev.sdp" %% "sdp-runtime-dsl" % pluginVersion,
+    sdpPipelineClass := "pipelines.Warehouse",
   )

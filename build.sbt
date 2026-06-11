@@ -119,26 +119,28 @@ lazy val sdpConnect = (project in file("sdp-connect"))
 
 // ---------------------------------------------------------------------
 // sbt-spark-pipelines — the sbt 2.0 AutoPlugin
-//   A thin convenience wrapper: drives macro extraction at compile time,
-//   validates via sdp-core, and pushes the resulting Protobuf graph to
-//   Spark Connect by delegating to `sdp-connect`.
+//   A thin convenience wrapper: evaluates the user's pipeline object in an
+//   isolated child classloader (classload-eval, D10), validates via sdp-core,
+//   and pushes the resulting Protobuf graph to Spark Connect by delegating to
+//   `sdp-connect`. The library-first SdpApp runner does the same off sbt.
 // ---------------------------------------------------------------------
 lazy val sbtSparkPipelines = (project in file("sbt-spark-pipelines"))
-  .dependsOn(sdpCore, sdpConnect, sdpRuntimeDsl % "test->compile")
+  .dependsOn(sdpCore, sdpConnect)
   .enablePlugins(SbtPlugin)
   .settings(
     name := "sbt-spark-pipelines",
     libraryDependencies ++= Seq(
-      // Reads macro-embedded fragment constants out of .tasty files —
-      // no classloading of user code, ever. See ROADMAP "Fragment discovery".
-      "ch.epfl.scala" %% "tasty-query"  % "1.8.0",
+      // Fragment discovery is classload-eval (D10), not TASTy scanning: the
+      // plugin loads the user's pipeline object in an isolated child
+      // classloader, calls `pipeline`, and gets the fragments back as STRINGS
+      // via dev.sdp.core.PipelineExport. The fragment string is the ONLY thing
+      // that crosses the loader boundary — the exact contract the old TASTy
+      // embedding used — so no compiler/TASTy reader (tasty-query) is needed.
+      // The Connect client + sdp-core arrive via `.dependsOn` above.
       "dev.zio"       %% "zio-test"     % zioVersion % Test,
       "dev.zio"       %% "zio-test-sbt" % zioVersion % Test,
     ),
     testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
-    // Forked tests see the real classpath via java.class.path — the TASTy
-    // scanner spec feeds it to tasty-query.
-    Test / fork := true,
 
     // sbt 2.0 publishes plugins in standard Maven layout (artifact suffix
     // `_sbt2_3`). Disable the legacy ivy-style layout so publishM2 / Central
@@ -146,7 +148,9 @@ lazy val sbtSparkPipelines = (project in file("sbt-spark-pipelines"))
     sbtPluginPublishLegacyMavenStyle := false,
 
     // Version lockstep: bake the plugin's own version into a constant so it
-    // can inject the matching `sdp-runtime-dsl` into consumer builds. A
+    // can inject the matching `sdp-runtime-dsl` AND `sdp-connect` into consumer
+    // builds (the runtime DSL is the authoring surface; sdp-connect carries
+    // SdpApp + PipelineExport the child-loader eval reflects against). A
     // sourceGenerator (zero new deps) instead of sbt-buildinfo — keeps the
     // dependency budget tight and avoids relying on an unverified
     // sbt-buildinfo `_sbt2_3` artifact.

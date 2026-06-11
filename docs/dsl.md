@@ -1,12 +1,15 @@
 # Pipeline DSL (`sdp-runtime-dsl`)
 
-> **Status: pre-release.** The DSL ships and is fully tested, but the sbt plugin
-> that collects definitions at build time has not landed yet — today you invoke
-> the assembly services directly (see [Validation](#validation)).
+Declare Spark Declarative Pipelines datasets in pure Scala 3. The DSL is a
+**runtime plan-builder**: each combinator is an ordinary function that builds a
+`GraphFragment` value. You list the fragments in one `Pipeline(...)` and the sbt
+plugin (or the `SdpApp` runner) assembles and validates the graph — dangling
+references and cycles fail `sbt sdpValidate`/`sdpManifest`, not your cluster job.
 
-Declare Spark Declarative Pipelines datasets in pure Scala 3. Table names and
-lineage are extracted **at compile time** by macros — invalid declarations fail
-`compile`, not your cluster job.
+Because it's plain Scala, **the whole host language is available** inside a flow
+body and around your declarations: helper functions, loops, conditionals,
+collections — none of the literal-only restrictions an earlier macro frontend
+imposed (see [Design history](#design-history)).
 
 ## Declaring datasets
 
@@ -15,16 +18,17 @@ lineage are extracted **at compile time** by macros — invalid declarations fai
 ```scala
 import dev.sdp.dsl.*
 
-val bronze = table("bronze_orders")
+val bronze = table("bronze_orders")               // declared managed table
+val cleaned = table("orders_clean") {              // table backed by a flow
+  spark.table("bronze_orders").where(col("amount") > lit(0L))
+}
 ```
 
-The name **must be a string literal**. A dynamic value is a compile error:
+The name is just a `String` — compute it however you like:
 
 ```scala
-val name: String = computeName()
-val bad = table(name)
-// error: Table name must be a constant string literal so it can be
-//        extracted at compile time; got: name
+def bucket(n: Int) = table(s"bucket_$n")           // perfectly fine now
+val buckets = (0 until 4).map(bucket).toList
 ```
 
 ### `externalTable` — a source the pipeline reads but doesn't own
@@ -45,8 +49,8 @@ Reads of `main.bronze.orders` are **not** dangling references, and the server
 resolves the table from the catalog at run time (an SDP *external input*) — it
 is never registered as a managed dataset, so it gets no `DefineOutput` and no
 flow. Typo-safety is preserved: only names you explicitly declare external are
-treated as external, so a misspelled *managed* dataset name still fails the
-build.
+treated as external, so a misspelled *managed* dataset name still fails
+`sdpValidate`/`sdpManifest`.
 
 **The string is the catalog *location*, not a name you assign.** This matters,
 and it's the opposite of the managed combinators:
@@ -61,14 +65,15 @@ the identifier reaches the analyzer through the **body** read
 (`spark.table("main.bronze.orders")`), which must be the *same* string for the
 lineage edge to connect. So whatever you pass is exactly what the catalog is
 asked to resolve — use the **real, fully-qualified** identifier (Unity Catalog
-`catalog.schema.table`), not a local alias. The name must be a string literal.
+`catalog.schema.table`), not a local alias.
 
 ### `streamingTable` — streaming table with lineage
 
 The body describes how the dataset reads from upstream datasets, written in
 the same `spark.*` API you already use. Every `spark.table("...")` /
-`spark.readStream.table("...")` reference becomes a lineage edge. The body is
-**never executed during extraction** — only its shape is read.
+`spark.readStream.table("...")` reference becomes a lineage edge. The body
+**runs** at assembly and builds a relation tree — it never touches a cluster
+(the builder records the plan, it doesn't execute Spark).
 
 ```scala
 val gold = streamingTable("gold_orders") {
@@ -81,13 +86,12 @@ val gold = streamingTable("gold_orders") {
 
 References are found through intermediate `val`s, joins, and nested
 expressions. Repeated references to the same upstream dedupe to one edge.
-Non-literal upstream names are compile errors, and **all** errors in a file are
-reported in a single compile pass.
+Because the body is ordinary Scala, you can factor it into helpers and reuse
+them across datasets.
 
-> The older `streamingTable("name") { ctx => ctx.readStream.table(...) }`
-> context-style form and the `streamingTableFrom` spelling still compile, but
-> the `spark.*` facade above is the documented surface — it's the exact
-> SparkSession API, so existing Spark bodies extract unchanged.
+> The `streamingTableFrom` spelling is an alias for `streamingTable` (muscle
+> memory). The `spark.*` facade is the documented surface — it's the exact
+> SparkSession API, so existing Spark bodies port across unchanged.
 
 ### `materializedView` / `temporaryView` — SQL-backed datasets
 
@@ -97,11 +101,9 @@ val doubled = materializedView("doubled")("SELECT id * 2 AS double_id FROM base_
 ```
 
 A materialized view is a batch dataset precomputed by exactly one SQL
-transformation; a temporary view is ephemeral, scoped to a single run. Both
-name and SQL must be string literals (each non-literal is its own compile
-error — a bad call site reports both at once). On the server these resolve
-fully: SQL-backed datasets are what make a pipeline pass `sdpPush`'s
-dry-run validation today, ahead of the typed transformation algebra.
+transformation; a temporary view is ephemeral, scoped to a single run. On the
+server these resolve fully: SQL-backed datasets are what make a pipeline pass
+`sdpPush`'s dry-run validation today, ahead of the typed transformation algebra.
 
 ### `sqlStreamingTable` — streaming table with a SQL flow
 
@@ -121,9 +123,9 @@ files, `rate`), which the typed algebra exposes as `Rel.DataSource`.
 ## The fluent flow language
 
 `streamingTable` / `materializedView` also accept a **typed flow body** (in
-place of a SQL string). The body is **extracted at compile time** — it never
-executes; the macro interprets it into a relation tree that travels with your
-build. It reads exactly like Spark:
+place of a SQL string). The body **runs** when the pipeline is assembled and
+builds a relation tree that travels with your build — it reads exactly like
+Spark, but the builder records the plan rather than executing it:
 
 ```scala
 import dev.sdp.dsl.*           // the spark.* facade, col/lit, operators
@@ -145,8 +147,7 @@ val daily = materializedView("value_counts") {
 
 > This is the **SDP programming-guide example**, ported verbatim — the only
 > change from the Python decorator form is that the dataset name is an explicit
-> string argument (we extract names at compile time, not from the function
-> name):
+> string argument (you name the dataset, not the enclosing function):
 >
 > ```scala
 > val daily_orders_by_state = materializedView("daily_orders_by_state") {
@@ -208,9 +209,16 @@ The language —
   wire these lower to plan-id references; you never see that.)
 
 **`val` intermediates work** — name your steps. Consecutive `withColumn`
-calls collapse into one operation. Anything outside the language is a
-*positioned compile error* naming what it saw. Compile cost is negligible:
-200 declarations extract in ~3 seconds.
+calls collapse into one operation. And since a flow body is ordinary Scala,
+you can build it with helpers, loops, and conditionals:
+
+```scala
+val report = materializedView("report") {
+  // a host-language loop the macro world couldn't express
+  val metricCols = Seq("clicks", "views", "signups").map(m => sum(col(m)).as(m))
+  spark.table("events").groupBy(col("day")).agg(metricCols*)
+}
+```
 
 ### Inline tables (`spark.createDataFrame`)
 
@@ -227,25 +235,25 @@ val regions = materializedView("regions") {
 }
 ```
 
-The macro reads the literal rows and the `.toDF(...)` names at compile time
-(the body never runs) and lowers them to SQL `VALUES` — Spark's analyzer
-rebuilds the identical in-memory relation an Arrow upload would, with no
-runtime data shipped from the build. Column types are inferred from the
-literals: numeric columns widen (`Int` < `Long` < `Double`), a `null` cell
-takes its column's type from the other rows, and each cell is `CAST` to its
+The builder reads the rows and the `.toDF(...)` names and lowers them to SQL
+`VALUES` — Spark's analyzer rebuilds the identical in-memory relation an Arrow
+upload would, with no data shipped from the build. Column types are inferred
+from the literals: numeric columns widen (`Int` < `Long` < `Double`), a `null`
+cell takes its column's type from the other rows, and each cell is `CAST` to its
 type so the schema is exact. A single-column table uses bare values
 (`Seq(1L, 2L, 3L)`); omit `.toDF(...)` to get `_1`, `_2`, … names.
 
-This is for **small** tables: a build-time guard caps an inline table at 1000
-rows / 64 KB (a *positioned compile error* otherwise). Larger data belongs in
-a source table — `externalTable` + the catalog, or `sdpSeed`. Cells must be
-literals (`Int`/`Long`/`Double`/`Boolean`/`String`/`null`); for richer shapes,
-build the rows with a SQL `VALUES`/`SELECT` via `spark.sql(...)`.
+This is for **small** tables: an assembly-time guard caps an inline table at
+1000 rows / 64 KB (the assembly fails otherwise). Larger data belongs in a
+source table — `externalTable` + the catalog, or `sdpSeed`. Cells are
+`Int`/`Long`/`Double`/`Boolean`/`String`/`null`; for richer shapes, build the
+rows with a SQL `VALUES`/`SELECT` via `spark.sql(...)`.
 
 ### Schema checking (gradual)
 
 Declare columns where they're unknowable — external sources — and every
-downstream column reference is checked at build time:
+downstream column reference is checked when the pipeline is assembled
+(`sdpValidate`/`sdpManifest`):
 
 ```scala
 val rawEvents = streamingTable("raw_events") {
@@ -257,7 +265,7 @@ val rawEvents = streamingTable("raw_events") {
 ```
 
 The `.schema("...")` string is Spark's DDL schema syntax — the same string
-`DataFrameReader.schema` accepts — parsed at compile time. Schemas
+`DataFrameReader.schema` accepts — parsed when the body runs. Schemas
 *propagate*: `select`/`withColumn`/`drop`/`toDF`/renames/joins transform the
 inferred column set, so a typo'd column **any number of datasets downstream**
 fails `sdpManifest` with:
@@ -278,8 +286,9 @@ final authority. Qualified references (`a.b`) are left to the server.
 ### Typed column references (`cols[S]`)
 
 Describe a schema as a Scala 3 named tuple and get *type-checked,
-IDE-autocompleted* column references — wrong names fail typing before
-extraction even runs:
+IDE-autocompleted* column references — wrong names are a **type error** at
+`compile`, before assembly even runs (this is the one small `inline` kept in
+the runtime DSL):
 
 ```scala
 type Orders = (order_id: Long, amount: Long, customer_name: String)
@@ -292,8 +301,8 @@ val gold = streamingTable("gold") {
 }
 ```
 
-`c.amount` extracts to exactly what `col("amount")` produces — the two styles
-mix freely, and the typed layer adds no measurable compile cost (leaf-only by
+`c.amount` builds exactly what `col("amount")` produces — the two styles mix
+freely, and the typed layer adds no measurable compile cost (leaf-only by
 design; no type-level schema propagation).
 
 Write schema aliases by hand, or generate them: **`sbt sdpImportSchemas`**
@@ -306,22 +315,52 @@ generated alias).
 Two payoffs over SQL strings:
 
 1. **Lineage is derived from the body** — `spark.readStream.table("silver_rates")`
-   creates the edge; cycles and dangling references across flow bodies fail
-   at `compile`, not at submission.
+   creates the edge; cycles and dangling references across flow bodies fail at
+   `sdpValidate`/`sdpManifest`, not at submission.
 2. **Function names are unresolved on the wire** — the server's analyzer
    binds them, so the whole Spark SQL function library is available via the
    `functions.*` surface or `fn("name", args*)`.
 
+## Assembling a pipeline — `Pipeline` and `SdpApp`
+
+Each combinator returns a `GraphFragment`. You collect every dataset into one
+list with `Pipeline(...)` (just `List[GraphFragment]`) and expose it from a
+single object the tooling can find:
+
+```scala
+import dev.sdp.dsl.*
+import dev.sdp.connect.app.SdpApp
+
+object Warehouse extends SdpApp:
+  def pipeline = Pipeline(
+    bronzeOrders,
+    silverOrders,
+    goldOrders,
+  )
+```
+
+`SdpApp` (from `sdp-connect`) makes that same object a **standalone runner**:
+the uber jar IS the production entry point — `java -jar app.jar validate`,
+`manifest [--out p]`, or `run [--dry]`, with config read from the environment
+(`SDP_CONNECT_ENDPOINT`, `SDP_STORAGE_ROOT`, `SDP_PIPELINE_NAME`). Argo/K8s
+schedules the jar with no sbt on the path. The sbt plugin
+([plugin.md](plugin.md)) drives the *same* `pipeline` value for the dev loop via
+`sdpPipelineClass := "com.example.Warehouse"`.
+
+You don't have to extend `SdpApp` — any object with `def pipeline:
+List[GraphFragment]` works for the plugin; `SdpApp` just adds the runner
+subcommands.
+
 ## Validation
 
-Each declaration produces a `GraphFragment`. Fragments merge order-independently
-and validate as one graph — duplicates, dangling references, and cycles are all
-reported together:
+Fragments merge order-independently and validate as one graph — duplicates,
+dangling references, and cycles are all reported together. Under the hood both
+the plugin and `SdpApp` call the same assembly service:
 
 ```scala
 import dev.sdp.app.{GraphValidation, ManifestAssembly}
 
-val program = ManifestAssembly.assemble(List(bronze, silver, gold))
+val program = ManifestAssembly.assemble(Pipeline(bronze, silver, gold))
   .provide(ManifestAssembly.live, GraphValidation.live)
 // IO[::[PipelineValidationError], PipelineManifest]
 ```
@@ -340,13 +379,13 @@ pass.
 
 ## The manifest
 
-A valid graph renders to a canonical, byte-stable manifest (`sdp-manifest/1`):
-nodes sorted by id, edges sorted by endpoints, fields percent-encoded, no
-timestamps. Equal pipelines always produce identical bytes — this is what makes
-build caching and change detection reliable.
+A valid graph renders to a canonical, byte-stable manifest (`sdp-manifest/2`):
+nodes sorted by id, edges sorted by endpoints, flows sorted by (target, name),
+fields percent-encoded, no timestamps. Equal pipelines always produce identical
+bytes — this is what makes build caching and change detection reliable.
 
 ```
-sdp-manifest/1
+sdp-manifest/2
 node|bronze_orders|table|delta
 node|dim_customers|table|delta
 node|gold_orders|streaming-table|delta
@@ -354,6 +393,7 @@ node|silver_orders|streaming-table|delta
 edge|bronze_orders|silver_orders
 edge|dim_customers|gold_orders
 edge|silver_orders|gold_orders
+flow|gold_orders|gold_orders|<canonical relation tree>
 ```
 
 `PipelineManifest.parse` is the inverse of `render` (round-trip law, tested).
@@ -379,6 +419,24 @@ build's conformance report, which also gates against upstream Spark changes):
   to go stale), operators, aliases, sort keys, ANSI `cast`
 
 Anything not yet covered is reachable through the SQL escape hatch
-(`sqlStreamingTable`, `materializedView`), and unsupported constructs in flow
-bodies are *positioned compile errors* that name the supported language —
-nothing is silently dropped.
+(`sqlStreamingTable`, `materializedView`). Because the builder is ordinary
+Scala, a construct it doesn't model is simply a method that doesn't exist —
+the compiler tells you at the call site.
+
+## Design history
+
+An earlier version of this DSL was a **compile-time macro frontend**:
+`transparent inline` entry points whose bodies were walked by `quotes.reflect`
+AST extraction, with the resulting lineage embedded into each call site's TASTy
+as a string constant for the sbt plugin to scan. That bought compile-time
+extraction but cost the host language — flow bodies could only contain the
+shapes the macro recognized, and arguments had to be string literals.
+
+Decision **D10** replaced it with the runtime plan-builder documented here. The
+builder produces the identical algebra trees (a frozen render-equivalence
+oracle guards that), but bodies are now plain `def`s and values — so loops,
+helpers, and conditionals all work. The plugin discovers fragments by
+*evaluating* your pipeline object in an isolated classloader and reading the
+fragment strings back across the boundary (the same string contract TASTy used);
+there is no macro, no TASTy scan, and no `inline` except the small `cols[S]`
+type-level field check.

@@ -8,8 +8,9 @@ import dev.sdp.core.LineCodec
   * Same design contract as the manifest line format: zero dependencies,
   * byte-stable (equal trees render identically — `render` is a pure function
   * of structure), and total parsing with the offending input in the error.
-  * This is the form algebra flow bodies take inside `SdpMeta.embed`
-  * constants and manifest v2 `flow|` lines.
+  * This is the form algebra flow bodies take inside the fragment string the
+  * plugin's classload-eval exports (`PipelineExport`) and manifest v2 `flow|`
+  * lines.
   *
   * Grammar (one node kind per tag, optional fields last):
   * {{{

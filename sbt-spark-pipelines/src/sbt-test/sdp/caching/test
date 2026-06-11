@@ -9,8 +9,10 @@
 > sdpManifest
 > checkUnchanged
 
-# Invalidation: adding a pipeline source must change the compiled-products
-# hash and force a recompute that includes the new dataset.
+# Invalidation: adding a pipeline source (and listing it in the pipeline) must
+# change the compiled-products hash and force a recompute that includes the new
+# dataset. Both files change the Runtime/fullClasspath the cache is keyed on.
 $ copy-file extra/Gold.scala src/main/scala/pipelines/Gold.scala
+$ copy-file extra/WarehouseWithGold.scala src/main/scala/pipelines/Warehouse.scala
 > sdpManifest
 > checkHasGold

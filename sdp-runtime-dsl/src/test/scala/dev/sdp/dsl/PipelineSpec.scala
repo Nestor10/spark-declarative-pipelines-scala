@@ -1,8 +1,7 @@
-package dev.sdp.dsl.runtime
+package dev.sdp.dsl
 
 import dev.sdp.app.{GraphValidation, ManifestAssembly}
 import dev.sdp.core.PipelineValidationError
-import dev.sdp.dsl.runtime.*
 import zio.test.*
 
 /** DoD #2: the explicit `Pipeline(...)` value drives the EXISTING
