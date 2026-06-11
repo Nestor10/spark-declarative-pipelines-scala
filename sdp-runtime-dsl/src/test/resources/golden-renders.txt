@@ -1,0 +1,134 @@
+>>> rates/rates
+(project (withcols (src rate stream (sch (c timestamp ts) (c value i64)) (ddl timestamp+TIMESTAMP%2C+value+BIGINT)) (wc test (fn upper false (col timestamp)))) (col value) (alias (col timestamp) seen_at))
+
+>>> daily_orders_by_state/daily_orders_by_state
+(withcols (renames (agg (read bronze.customer_orders batch) (groups (col state) (col order_date)) (aggs (alias (fn count false (star)) count))) (rn count order_count)) (wc test (col order_count)))
+
+>>> orders_enriched/orders_enriched
+(agg (withcols (filter (read bronze.orders batch) (fn %3E false (col amount) (lit i64 0))) (wc rn (window (fn row_number false) (parts (col state)) (keys (key (col amount) desc nd))))) (groups (col state)) (aggs (alias (fn sum false (col amount)) total) (alias (fn count false (star)) n)))
+
+>>> regions/regions
+(localdata (sch (c state str) (c region str)) (row (lit str CA) (lit str West)) (row (lit str NY) (lit str East)) (row (lit str TX) (lit str South)))
+
+>>> sourceOptionWhereSelect/silver
+(project (filter (src rate stream (opt rowsPerSecond 1)) (fn %3E false (col value) (lit i64 0))) (col value) (alias (fn * false (col value) (lit i32 2)) doubled))
+
+>>> valIntermediates/gold
+(project (filter (read silver stream) (fn %3E false (col value) (lit i32 10))) (col value))
+
+>>> inlineToDf/regions
+(localdata (sch (c id i32) (c name str)) (row (lit i32 1) (lit str North)) (row (lit i32 2) (lit str South)))
+
+>>> inlineMixed/mixed
+(localdata (sch (c _1 i64) (c _2 f64) (c _3 str)) (row (lit i32 1) (lit f64 1.5) (lit str a)) (row (lit i64 2) (lit null) (lit str b)))
+
+>>> inlineSingleColumn/ids
+(localdata (sch (c id i64)) (row (lit i64 1)) (row (lit i64 2)) (row (lit i64 3)))
+
+>>> groupAggJoinOrderLimit/report
+(limit (sort (agg (join inner (read facts batch) (read dims batch) (fn %3D%3D false (col facts.id) (col dims.id))) (groups (col dims.kind)) (aggs (alias (fn count false (col facts.id)) n))) (key (col n) desc nd)) 10)
+
+>>> castSampleHint/t1
+(hint (sample (project (read src stream) (alias (cast (col id) str) id_str)) 0.25 42) broadcast)
+
+>>> repartitionNaStat/stats
+(describe (fillna (dropna (repartition (range 0 100 1) 4 shuffle) id) (lit i64 0) id) id)
+
+>>> unpivotObserve/melted
+(unpivot (metrics (range 0 10 1) input_count (alias (fn count false (col id)) n)) metric value (ids (col id)) (vals))
+
+>>> exprStarWindow/ranked
+(project (agg (withcols (range 0 100 1) (wc bucket (expr id+%25+7))) (groups (col bucket)) (aggs (alias (fn count false (star)) n))) (col bucket) (col n) (alias (window (fn row_number false) (parts (col bucket)) (keys (key (col n) desc nd))) rank))
+
+>>> containerAccess/containers
+(project (range 0 1 1) (alias (extract (col m) (lit str k)) v) (alias (extract (col s) (lit str inner)) f))
+
+>>> lambdasNamed/hof
+(project (range 0 1 1) (alias (fn transform false (col xs) (lam (vars item) (fn * false (lamvar item) (lit i32 2)))) doubled) (alias (fn zip_with false (col a) (col b) (lam (vars l r) (fn %2B false (lamvar l) (lamvar r)))) sums))
+
+>>> subqueries/subq
+(project (filter (filter (range 0 100 1) (subq exists (filter (read flags batch) (fn %3D%3D false (col active) (lit bool true))))) (subq in (read allowed_ids batch) (vals (col id)))) (col id) (alias (subq scalar (agg (read stats batch) (groups) (aggs (fn max false (col v))))) max_v))
+
+>>> tastyRoundTrip/rt
+(limit (filter (read src stream) (fn and false (col a) (col b))) 3)
+
+>>> facadeTable/t
+(read orders batch)
+
+>>> facadeSql/q
+(sql SELECT+1+AS+one)
+
+>>> facadeRange1/r1
+(range 0 10 1)
+
+>>> facadeRange3/r3
+(range 5 50 5)
+
+>>> facadeReadTable/rt
+(read dim batch)
+
+>>> facadeReadStream/st
+(read orders stream)
+
+>>> facadeStreamSource/ss
+(src rate stream (opt rowsPerSecond 1))
+
+>>> facadeBatchSource/bs
+(src csv batch (opt path %2Fdata%2Fseed.csv))
+
+>>> guideExample/daily_orders_by_state
+(renames (agg (read customer_orders batch) (groups (col state) (col order_date)) (aggs (alias (fn count false (star)) count))) (rn count order_count))
+
+>>> sugarStringsSortFilter/a
+(sort (project (filter (read t batch) (fn %3E false (col x) (lit i32 0))) (col x) (col y)) (key (col y) asc nd))
+
+>>> sugarIsin/b
+(filter (read t batch) (fn in false (col state) (lit str CA) (lit str NY)))
+
+>>> sugarNaFill/c
+(fillna (read t batch) (lit i64 0) a b)
+
+>>> sugarStatCorr/d
+(corr (read t batch) x y)
+
+>>> withColumnsMaps/m
+(renames (withcols (read t batch) (wc a (lit i32 1)) (wc b (fn * false (col x) (lit i32 2)))) (rn a alpha) (rn b beta))
+
+>>> functionsFacade/report
+(withcols (agg (read orders batch) (groups (col state)) (aggs (alias (fn count false (col id)) n) (alias (fn sum false (col amount)) total) (fn avg false (col amount)))) (wc flag (fn when false (fn %3E false (col n) (lit i32 10)) (lit str hot) (fn %3E false (col n) (lit i32 5)) (lit str warm) (lit str cold))) (wc power (fn power false (col total) (lit f64 2.0))) (wc joined (fn concat_ws false (lit str %2C) (col state) (col flag))))
+
+>>> hofsNoWrapper/hof
+(project (read t batch) (alias (fn transform false (col xs) (lam (vars x) (fn * false (lamvar x) (lit i32 2)))) doubled) (alias (fn zip_with false (col a) (col b) (lam (vars l r) (fn %2B false (lamvar l) (lamvar r)))) sums) (alias (window (fn lag false (col v) (lit i32 1)) (parts (col k)) (keys (key (col ts) asc nd))) prev))
+
+>>> ddlSchema/rates
+(project (src rate stream (sch (c timestamp ts) (c value i64) (c note unknown)) (ddl timestamp+TIMESTAMP%2C+value+BIGINT%2C+note+DECIMAL%2810%2C2%29)) (col value) (alias (col timestamp) seen_at))
+
+>>> withSchemaSource/raw_events
+(project (src rate stream (opt rowsPerSecond 50) (sch (c timestamp ts) (c value i64)) (ddl timestamp+TIMESTAMP%2C+value+BIGINT)) (col timestamp) (alias (col value) event_id))
+
+>>> crossModulo/orders
+(withcols (read raw_events stream) (wc order_id (fn %25 false (col event_id) (lit i64 100000))) (wc amount (fn %2B false (fn %25 false (col event_id) (lit i64 500)) (lit i64 1))))
+
+>>> booleanAnd/valid_orders
+(filter (read orders stream) (fn and false (fn %3E false (col amount) (lit i64 0)) (fn %21%3D false (col order_id) (lit i64 0))))
+
+>>> dropDuplicatesOne/deduped_orders
+(dedup (read valid_orders stream) order_id)
+
+>>> joinDrop/bucketed_orders
+(dropcols (join inner (withcols (read deduped_orders stream) (wc bucket_id (fn %25 false (col amount) (lit i64 10)))) (read dim_buckets batch) (fn %3D%3D false (col bucket_id) (col bucket_id))) event_id)
+
+>>> unionDistinct/extreme_buckets
+(dedup (setop union all (read top_buckets batch) (read bottom_buckets batch)))
+
+>>> aliasSelect/quiet_days
+(project (qalias (filter (read dim_calendar batch) (fn %3E%3D false (col day_of_week) (lit i64 5))) weekend_days) (col day_index))
+
+>>> offsetTail/audit_sample
+(tail (offset (read bucketed_orders batch) 10) 100)
+
+>>> orderByAsc/bottom_buckets
+(limit (sort (read bucket_revenue batch) (key (col revenue) asc nd)) 3)
+
+>>> typedCols/typed
+(project (filter (read bronze.orders batch) (fn %3E false (col amount) (lit i64 0))) (col order_id) (col state))
