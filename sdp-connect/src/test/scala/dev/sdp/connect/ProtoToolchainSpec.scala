@@ -1,4 +1,4 @@
-package dev.sdp.plugin
+package dev.sdp.connect
 
 import org.apache.spark.connect.proto as sc
 import zio.test.*

@@ -1,4 +1,4 @@
-package dev.sdp.plugin.conformance
+package dev.sdp.connect.conformance
 
 import scala.jdk.CollectionConverters.*
 

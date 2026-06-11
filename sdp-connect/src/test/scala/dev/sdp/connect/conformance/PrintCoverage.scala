@@ -1,4 +1,4 @@
-package dev.sdp.plugin.conformance
+package dev.sdp.connect.conformance
 
 /** Print the wire-surface coverage matrix: what we emit, what we don't, per
   * tier, plus untriaged counts. The numbers are *generated* from the pinned
@@ -6,7 +6,7 @@ package dev.sdp.plugin.conformance
   * never hand-maintained.
   *
   * {{{
-  * sbt 'sbtSparkPipelines/Test/runMain dev.sdp.plugin.conformance.PrintCoverage'
+  * sbt 'sdpConnect/Test/runMain dev.sdp.connect.conformance.PrintCoverage'
   * }}}
   */
 object PrintCoverage:

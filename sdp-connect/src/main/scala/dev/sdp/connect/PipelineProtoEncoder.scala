@@ -1,4 +1,4 @@
-package dev.sdp.plugin
+package dev.sdp.connect
 
 import dev.sdp.core.{PipelineManifest, PipelineNode}
 import org.apache.spark.connect.proto as sc
