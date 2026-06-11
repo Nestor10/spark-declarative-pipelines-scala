@@ -1,0 +1,26 @@
+target/
+project/target/
+project/project/
+.bsp/
+.bloop/
+.metals/
+.scala-build/
+.vscode/
+.idea/
+.idea_modules/
+*.class
+*.log
+.DS_Store
+secrets/
+
+# local tooling
+.claude/
+.mcp.json
+project/metals.sbt
+build.sbt.semanticdb
+
+# internal working docs — not part of the published repo
+CLAUDE.md
+DECISIONS.md
+ROADMAP.md
+context/

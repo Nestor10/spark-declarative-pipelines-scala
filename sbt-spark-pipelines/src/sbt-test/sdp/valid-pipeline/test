@@ -1,0 +1,16 @@
+# F7b scripted: valid pipeline → manifest with expected canonical content
+> sdpManifest
+> checkManifest
+
+# F14b: schema codegen — inferred shapes become named-tuple aliases,
+# and the project still compiles WITH the generated file in sources.
+> sdpImportSchemas
+> checkSchemas
+> compile
+
+# Zinc incremental correctness: deleting a source must drop its fragments
+# from the next manifest WITHOUT a clean. This is the property that killed
+# the sidecar-file design — here it must just work.
+$ delete src/main/scala/pipelines/Silver.scala
+> sdpManifest
+> checkManifestAfterDelete

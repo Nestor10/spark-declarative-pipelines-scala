@@ -1,0 +1,16 @@
+# F7c scripted: cache correctness for the manifest task.
+
+# First run: produce and snapshot the manifest.
+> sdpManifest
+> checkNoGold
+> manifestSnapshot
+
+# No-op re-run: bytes must be identical (determinism + safe cache replay).
+> sdpManifest
+> checkUnchanged
+
+# Invalidation: adding a pipeline source must change the compiled-products
+# hash and force a recompute that includes the new dataset.
+$ copy-file extra/Gold.scala src/main/scala/pipelines/Gold.scala
+> sdpManifest
+> checkHasGold

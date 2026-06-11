@@ -1,0 +1,1043 @@
+file spark/connect/catalog.proto
+  msg spark.connect.CacheTable
+    field 1 table_name string
+    field 2 storage_level optional message:spark.connect.StorageLevel oneof=_storage_level
+  msg spark.connect.Catalog
+    field 1 current_database message:spark.connect.CurrentDatabase oneof=cat_type
+    field 2 set_current_database message:spark.connect.SetCurrentDatabase oneof=cat_type
+    field 3 list_databases message:spark.connect.ListDatabases oneof=cat_type
+    field 4 list_tables message:spark.connect.ListTables oneof=cat_type
+    field 5 list_functions message:spark.connect.ListFunctions oneof=cat_type
+    field 6 list_columns message:spark.connect.ListColumns oneof=cat_type
+    field 7 get_database message:spark.connect.GetDatabase oneof=cat_type
+    field 8 get_table message:spark.connect.GetTable oneof=cat_type
+    field 9 get_function message:spark.connect.GetFunction oneof=cat_type
+    field 10 database_exists message:spark.connect.DatabaseExists oneof=cat_type
+    field 11 table_exists message:spark.connect.TableExists oneof=cat_type
+    field 12 function_exists message:spark.connect.FunctionExists oneof=cat_type
+    field 13 create_external_table message:spark.connect.CreateExternalTable oneof=cat_type
+    field 14 create_table message:spark.connect.CreateTable oneof=cat_type
+    field 15 drop_temp_view message:spark.connect.DropTempView oneof=cat_type
+    field 16 drop_global_temp_view message:spark.connect.DropGlobalTempView oneof=cat_type
+    field 17 recover_partitions message:spark.connect.RecoverPartitions oneof=cat_type
+    field 18 is_cached message:spark.connect.IsCached oneof=cat_type
+    field 19 cache_table message:spark.connect.CacheTable oneof=cat_type
+    field 20 uncache_table message:spark.connect.UncacheTable oneof=cat_type
+    field 21 clear_cache message:spark.connect.ClearCache oneof=cat_type
+    field 22 refresh_table message:spark.connect.RefreshTable oneof=cat_type
+    field 23 refresh_by_path message:spark.connect.RefreshByPath oneof=cat_type
+    field 24 current_catalog message:spark.connect.CurrentCatalog oneof=cat_type
+    field 25 set_current_catalog message:spark.connect.SetCurrentCatalog oneof=cat_type
+    field 26 list_catalogs message:spark.connect.ListCatalogs oneof=cat_type
+  msg spark.connect.ClearCache
+  msg spark.connect.CreateExternalTable
+    field 1 table_name string
+    field 2 path optional string oneof=_path
+    field 3 source optional string oneof=_source
+    field 4 schema optional message:spark.connect.DataType oneof=_schema
+    field 5 options repeated message:spark.connect.CreateExternalTable.OptionsEntry
+  msg spark.connect.CreateExternalTable.OptionsEntry
+    field 1 key string
+    field 2 value string
+  msg spark.connect.CreateTable
+    field 1 table_name string
+    field 2 path optional string oneof=_path
+    field 3 source optional string oneof=_source
+    field 4 description optional string oneof=_description
+    field 5 schema optional message:spark.connect.DataType oneof=_schema
+    field 6 options repeated message:spark.connect.CreateTable.OptionsEntry
+  msg spark.connect.CreateTable.OptionsEntry
+    field 1 key string
+    field 2 value string
+  msg spark.connect.CurrentCatalog
+  msg spark.connect.CurrentDatabase
+  msg spark.connect.DatabaseExists
+    field 1 db_name string
+  msg spark.connect.DropGlobalTempView
+    field 1 view_name string
+  msg spark.connect.DropTempView
+    field 1 view_name string
+  msg spark.connect.FunctionExists
+    field 1 function_name string
+    field 2 db_name optional string oneof=_db_name
+  msg spark.connect.GetDatabase
+    field 1 db_name string
+  msg spark.connect.GetFunction
+    field 1 function_name string
+    field 2 db_name optional string oneof=_db_name
+  msg spark.connect.GetTable
+    field 1 table_name string
+    field 2 db_name optional string oneof=_db_name
+  msg spark.connect.IsCached
+    field 1 table_name string
+  msg spark.connect.ListCatalogs
+    field 1 pattern optional string oneof=_pattern
+  msg spark.connect.ListColumns
+    field 1 table_name string
+    field 2 db_name optional string oneof=_db_name
+  msg spark.connect.ListDatabases
+    field 1 pattern optional string oneof=_pattern
+  msg spark.connect.ListFunctions
+    field 1 db_name optional string oneof=_db_name
+    field 2 pattern optional string oneof=_pattern
+  msg spark.connect.ListTables
+    field 1 db_name optional string oneof=_db_name
+    field 2 pattern optional string oneof=_pattern
+  msg spark.connect.RecoverPartitions
+    field 1 table_name string
+  msg spark.connect.RefreshByPath
+    field 1 path string
+  msg spark.connect.RefreshTable
+    field 1 table_name string
+  msg spark.connect.SetCurrentCatalog
+    field 1 catalog_name string
+  msg spark.connect.SetCurrentDatabase
+    field 1 db_name string
+  msg spark.connect.TableExists
+    field 1 table_name string
+    field 2 db_name optional string oneof=_db_name
+  msg spark.connect.UncacheTable
+    field 1 table_name string
+file spark/connect/common.proto
+  msg spark.connect.Bools
+    field 1 values repeated bool
+  msg spark.connect.Doubles
+    field 1 values repeated double
+  msg spark.connect.ExecutorResourceRequest
+    field 1 resource_name string
+    field 2 amount int64
+    field 3 discovery_script optional string oneof=_discovery_script
+    field 4 vendor optional string oneof=_vendor
+  msg spark.connect.Floats
+    field 1 values repeated float
+  msg spark.connect.Ints
+    field 1 values repeated int32
+  msg spark.connect.JvmOrigin
+    field 1 line optional int32 oneof=_line
+    field 2 start_position optional int32 oneof=_start_position
+    field 3 start_index optional int32 oneof=_start_index
+    field 4 stop_index optional int32 oneof=_stop_index
+    field 5 sql_text optional string oneof=_sql_text
+    field 6 object_type optional string oneof=_object_type
+    field 7 object_name optional string oneof=_object_name
+    field 8 stack_trace repeated message:spark.connect.StackTraceElement
+  msg spark.connect.Longs
+    field 1 values repeated int64
+  msg spark.connect.Origin
+    field 1 python_origin message:spark.connect.PythonOrigin oneof=function
+    field 2 jvm_origin message:spark.connect.JvmOrigin oneof=function
+  msg spark.connect.PythonOrigin
+    field 1 fragment string
+    field 2 call_site string
+  msg spark.connect.ResolvedIdentifier
+    field 1 catalog_name string
+    field 2 namespace repeated string
+    field 3 table_name string
+  msg spark.connect.ResourceInformation
+    field 1 name string
+    field 2 addresses repeated string
+  msg spark.connect.ResourceProfile
+    field 1 executor_resources repeated message:spark.connect.ResourceProfile.ExecutorResourcesEntry
+    field 2 task_resources repeated message:spark.connect.ResourceProfile.TaskResourcesEntry
+  msg spark.connect.ResourceProfile.ExecutorResourcesEntry
+    field 1 key string
+    field 2 value message:spark.connect.ExecutorResourceRequest
+  msg spark.connect.ResourceProfile.TaskResourcesEntry
+    field 1 key string
+    field 2 value message:spark.connect.TaskResourceRequest
+  msg spark.connect.StackTraceElement
+    field 1 class_loader_name optional string oneof=_class_loader_name
+    field 2 module_name optional string oneof=_module_name
+    field 3 module_version optional string oneof=_module_version
+    field 4 declaring_class string
+    field 5 method_name string
+    field 6 file_name optional string oneof=_file_name
+    field 7 line_number int32
+  msg spark.connect.StorageLevel
+    field 1 use_disk bool
+    field 2 use_memory bool
+    field 3 use_off_heap bool
+    field 4 deserialized bool
+    field 5 replication int32
+  msg spark.connect.Strings
+    field 1 values repeated string
+  msg spark.connect.TaskResourceRequest
+    field 1 resource_name string
+    field 2 amount double
+file spark/connect/expressions.proto
+  msg spark.connect.CallFunction
+    field 1 function_name string
+    field 2 arguments repeated message:spark.connect.Expression
+  msg spark.connect.CommonInlineUserDefinedFunction
+    field 1 function_name string
+    field 2 deterministic bool
+    field 3 arguments repeated message:spark.connect.Expression
+    field 4 python_udf message:spark.connect.PythonUDF oneof=function
+    field 5 scalar_scala_udf message:spark.connect.ScalarScalaUDF oneof=function
+    field 6 java_udf message:spark.connect.JavaUDF oneof=function
+    field 7 is_distinct bool
+  msg spark.connect.Expression
+    field 1 literal message:spark.connect.Expression.Literal oneof=expr_type
+    field 2 unresolved_attribute message:spark.connect.Expression.UnresolvedAttribute oneof=expr_type
+    field 3 unresolved_function message:spark.connect.Expression.UnresolvedFunction oneof=expr_type
+    field 4 expression_string message:spark.connect.Expression.ExpressionString oneof=expr_type
+    field 5 unresolved_star message:spark.connect.Expression.UnresolvedStar oneof=expr_type
+    field 6 alias message:spark.connect.Expression.Alias oneof=expr_type
+    field 7 cast message:spark.connect.Expression.Cast oneof=expr_type
+    field 8 unresolved_regex message:spark.connect.Expression.UnresolvedRegex oneof=expr_type
+    field 9 sort_order message:spark.connect.Expression.SortOrder oneof=expr_type
+    field 10 lambda_function message:spark.connect.Expression.LambdaFunction oneof=expr_type
+    field 11 window message:spark.connect.Expression.Window oneof=expr_type
+    field 12 unresolved_extract_value message:spark.connect.Expression.UnresolvedExtractValue oneof=expr_type
+    field 13 update_fields message:spark.connect.Expression.UpdateFields oneof=expr_type
+    field 14 unresolved_named_lambda_variable message:spark.connect.Expression.UnresolvedNamedLambdaVariable oneof=expr_type
+    field 15 common_inline_user_defined_function message:spark.connect.CommonInlineUserDefinedFunction oneof=expr_type
+    field 16 call_function message:spark.connect.CallFunction oneof=expr_type
+    field 17 named_argument_expression message:spark.connect.NamedArgumentExpression oneof=expr_type
+    field 18 common message:spark.connect.ExpressionCommon
+    field 19 merge_action message:spark.connect.MergeAction oneof=expr_type
+    field 20 typed_aggregate_expression message:spark.connect.TypedAggregateExpression oneof=expr_type
+    field 21 subquery_expression message:spark.connect.SubqueryExpression oneof=expr_type
+    field 22 direct_shuffle_partition_id message:spark.connect.Expression.DirectShufflePartitionID oneof=expr_type
+    field 999 extension message:google.protobuf.Any oneof=expr_type
+  msg spark.connect.Expression.Alias
+    field 1 expr message:spark.connect.Expression
+    field 2 name repeated string
+    field 3 metadata optional string oneof=_metadata
+  msg spark.connect.Expression.Cast
+    field 1 expr message:spark.connect.Expression
+    field 2 type message:spark.connect.DataType oneof=cast_to_type
+    field 3 type_str string oneof=cast_to_type
+    field 4 eval_mode enum:spark.connect.Expression.Cast.EvalMode
+    enum spark.connect.Expression.Cast.EvalMode
+      value 0 EVAL_MODE_UNSPECIFIED
+      value 1 EVAL_MODE_LEGACY
+      value 2 EVAL_MODE_ANSI
+      value 3 EVAL_MODE_TRY
+  msg spark.connect.Expression.DirectShufflePartitionID
+    field 1 child message:spark.connect.Expression
+  msg spark.connect.Expression.ExpressionString
+    field 1 expression string
+  msg spark.connect.Expression.LambdaFunction
+    field 1 function message:spark.connect.Expression
+    field 2 arguments repeated message:spark.connect.Expression.UnresolvedNamedLambdaVariable
+  msg spark.connect.Expression.Literal
+    field 1 null message:spark.connect.DataType oneof=literal_type
+    field 2 binary bytes oneof=literal_type
+    field 3 boolean bool oneof=literal_type
+    field 4 byte int32 oneof=literal_type
+    field 5 short int32 oneof=literal_type
+    field 6 integer int32 oneof=literal_type
+    field 7 long int64 oneof=literal_type
+    field 10 float float oneof=literal_type
+    field 11 double double oneof=literal_type
+    field 12 decimal message:spark.connect.Expression.Literal.Decimal oneof=literal_type
+    field 13 string string oneof=literal_type
+    field 16 date int32 oneof=literal_type
+    field 17 timestamp int64 oneof=literal_type
+    field 18 timestamp_ntz int64 oneof=literal_type
+    field 19 calendar_interval message:spark.connect.Expression.Literal.CalendarInterval oneof=literal_type
+    field 20 year_month_interval int32 oneof=literal_type
+    field 21 day_time_interval int64 oneof=literal_type
+    field 22 array message:spark.connect.Expression.Literal.Array oneof=literal_type
+    field 23 map message:spark.connect.Expression.Literal.Map oneof=literal_type
+    field 24 struct message:spark.connect.Expression.Literal.Struct oneof=literal_type
+    field 25 specialized_array message:spark.connect.Expression.Literal.SpecializedArray oneof=literal_type
+    field 26 time message:spark.connect.Expression.Literal.Time oneof=literal_type
+    field 100 data_type message:spark.connect.DataType
+  msg spark.connect.Expression.Literal.Array
+    field 1 element_type message:spark.connect.DataType
+    field 2 elements repeated message:spark.connect.Expression.Literal
+  msg spark.connect.Expression.Literal.CalendarInterval
+    field 1 months int32
+    field 2 days int32
+    field 3 microseconds int64
+  msg spark.connect.Expression.Literal.Decimal
+    field 1 value string
+    field 2 precision optional int32 oneof=_precision
+    field 3 scale optional int32 oneof=_scale
+  msg spark.connect.Expression.Literal.Map
+    field 1 key_type message:spark.connect.DataType
+    field 2 value_type message:spark.connect.DataType
+    field 3 keys repeated message:spark.connect.Expression.Literal
+    field 4 values repeated message:spark.connect.Expression.Literal
+  msg spark.connect.Expression.Literal.SpecializedArray
+    field 1 bools message:spark.connect.Bools oneof=value_type
+    field 2 ints message:spark.connect.Ints oneof=value_type
+    field 3 longs message:spark.connect.Longs oneof=value_type
+    field 4 floats message:spark.connect.Floats oneof=value_type
+    field 5 doubles message:spark.connect.Doubles oneof=value_type
+    field 6 strings message:spark.connect.Strings oneof=value_type
+  msg spark.connect.Expression.Literal.Struct
+    field 1 struct_type message:spark.connect.DataType
+    field 2 elements repeated message:spark.connect.Expression.Literal
+  msg spark.connect.Expression.Literal.Time
+    field 1 nano int64
+    field 2 precision optional int32 oneof=_precision
+  msg spark.connect.Expression.SortOrder
+    field 1 child message:spark.connect.Expression
+    field 2 direction enum:spark.connect.Expression.SortOrder.SortDirection
+    field 3 null_ordering enum:spark.connect.Expression.SortOrder.NullOrdering
+    enum spark.connect.Expression.SortOrder.NullOrdering
+      value 0 SORT_NULLS_UNSPECIFIED
+      value 1 SORT_NULLS_FIRST
+      value 2 SORT_NULLS_LAST
+    enum spark.connect.Expression.SortOrder.SortDirection
+      value 0 SORT_DIRECTION_UNSPECIFIED
+      value 1 SORT_DIRECTION_ASCENDING
+      value 2 SORT_DIRECTION_DESCENDING
+  msg spark.connect.Expression.UnresolvedAttribute
+    field 1 unparsed_identifier string
+    field 2 plan_id optional int64 oneof=_plan_id
+    field 3 is_metadata_column optional bool oneof=_is_metadata_column
+  msg spark.connect.Expression.UnresolvedExtractValue
+    field 1 child message:spark.connect.Expression
+    field 2 extraction message:spark.connect.Expression
+  msg spark.connect.Expression.UnresolvedFunction
+    field 1 function_name string
+    field 2 arguments repeated message:spark.connect.Expression
+    field 3 is_distinct bool
+    field 4 is_user_defined_function bool
+    field 5 is_internal optional bool oneof=_is_internal
+  msg spark.connect.Expression.UnresolvedNamedLambdaVariable
+    field 1 name_parts repeated string
+  msg spark.connect.Expression.UnresolvedRegex
+    field 1 col_name string
+    field 2 plan_id optional int64 oneof=_plan_id
+  msg spark.connect.Expression.UnresolvedStar
+    field 1 unparsed_target optional string oneof=_unparsed_target
+    field 2 plan_id optional int64 oneof=_plan_id
+  msg spark.connect.Expression.UpdateFields
+    field 1 struct_expression message:spark.connect.Expression
+    field 2 field_name string
+    field 3 value_expression message:spark.connect.Expression
+  msg spark.connect.Expression.Window
+    field 1 window_function message:spark.connect.Expression
+    field 2 partition_spec repeated message:spark.connect.Expression
+    field 3 order_spec repeated message:spark.connect.Expression.SortOrder
+    field 4 frame_spec message:spark.connect.Expression.Window.WindowFrame
+  msg spark.connect.Expression.Window.WindowFrame
+    field 1 frame_type enum:spark.connect.Expression.Window.WindowFrame.FrameType
+    field 2 lower message:spark.connect.Expression.Window.WindowFrame.FrameBoundary
+    field 3 upper message:spark.connect.Expression.Window.WindowFrame.FrameBoundary
+    enum spark.connect.Expression.Window.WindowFrame.FrameType
+      value 0 FRAME_TYPE_UNDEFINED
+      value 1 FRAME_TYPE_ROW
+      value 2 FRAME_TYPE_RANGE
+  msg spark.connect.Expression.Window.WindowFrame.FrameBoundary
+    field 1 current_row bool oneof=boundary
+    field 2 unbounded bool oneof=boundary
+    field 3 value message:spark.connect.Expression oneof=boundary
+  msg spark.connect.ExpressionCommon
+    field 1 origin message:spark.connect.Origin
+  msg spark.connect.JavaUDF
+    field 1 class_name string
+    field 2 output_type optional message:spark.connect.DataType oneof=_output_type
+    field 3 aggregate bool
+  msg spark.connect.MergeAction
+    field 1 action_type enum:spark.connect.MergeAction.ActionType
+    field 2 condition optional message:spark.connect.Expression oneof=_condition
+    field 3 assignments repeated message:spark.connect.MergeAction.Assignment
+    enum spark.connect.MergeAction.ActionType
+      value 0 ACTION_TYPE_INVALID
+      value 1 ACTION_TYPE_DELETE
+      value 2 ACTION_TYPE_INSERT
+      value 3 ACTION_TYPE_INSERT_STAR
+      value 4 ACTION_TYPE_UPDATE
+      value 5 ACTION_TYPE_UPDATE_STAR
+  msg spark.connect.MergeAction.Assignment
+    field 1 key message:spark.connect.Expression
+    field 2 value message:spark.connect.Expression
+  msg spark.connect.NamedArgumentExpression
+    field 1 key string
+    field 2 value message:spark.connect.Expression
+  msg spark.connect.PythonUDF
+    field 1 output_type message:spark.connect.DataType
+    field 2 eval_type int32
+    field 3 command bytes
+    field 4 python_ver string
+    field 5 additional_includes repeated string
+  msg spark.connect.ScalarScalaUDF
+    field 1 payload bytes
+    field 2 inputTypes repeated message:spark.connect.DataType
+    field 3 outputType message:spark.connect.DataType
+    field 4 nullable bool
+    field 5 aggregate bool
+  msg spark.connect.SubqueryExpression
+    field 1 plan_id int64
+    field 2 subquery_type enum:spark.connect.SubqueryExpression.SubqueryType
+    field 3 table_arg_options optional message:spark.connect.SubqueryExpression.TableArgOptions oneof=_table_arg_options
+    field 4 in_subquery_values repeated message:spark.connect.Expression
+    enum spark.connect.SubqueryExpression.SubqueryType
+      value 0 SUBQUERY_TYPE_UNKNOWN
+      value 1 SUBQUERY_TYPE_SCALAR
+      value 2 SUBQUERY_TYPE_EXISTS
+      value 3 SUBQUERY_TYPE_TABLE_ARG
+      value 4 SUBQUERY_TYPE_IN
+  msg spark.connect.SubqueryExpression.TableArgOptions
+    field 1 partition_spec repeated message:spark.connect.Expression
+    field 2 order_spec repeated message:spark.connect.Expression.SortOrder
+    field 3 with_single_partition optional bool oneof=_with_single_partition
+  msg spark.connect.TypedAggregateExpression
+    field 1 scalar_scala_udf message:spark.connect.ScalarScalaUDF
+file spark/connect/ml_common.proto
+  msg spark.connect.MlOperator
+    field 1 name string
+    field 2 uid string
+    field 3 type enum:spark.connect.MlOperator.OperatorType
+    enum spark.connect.MlOperator.OperatorType
+      value 0 OPERATOR_TYPE_UNSPECIFIED
+      value 1 OPERATOR_TYPE_ESTIMATOR
+      value 2 OPERATOR_TYPE_TRANSFORMER
+      value 3 OPERATOR_TYPE_EVALUATOR
+      value 4 OPERATOR_TYPE_MODEL
+  msg spark.connect.MlParams
+    field 1 params repeated message:spark.connect.MlParams.ParamsEntry
+  msg spark.connect.MlParams.ParamsEntry
+    field 1 key string
+    field 2 value message:spark.connect.Expression.Literal
+  msg spark.connect.ObjectRef
+    field 1 id string
+file spark/connect/pipelines.proto
+  msg spark.connect.PipelineAnalysisContext
+    field 1 dataflow_graph_id optional string oneof=_dataflow_graph_id
+    field 2 definition_path optional string oneof=_definition_path
+    field 3 flow_name optional string oneof=_flow_name
+    field 999 extension repeated message:google.protobuf.Any
+  msg spark.connect.PipelineCommand
+    field 1 create_dataflow_graph message:spark.connect.PipelineCommand.CreateDataflowGraph oneof=command_type
+    field 2 define_output message:spark.connect.PipelineCommand.DefineOutput oneof=command_type
+    field 3 define_flow message:spark.connect.PipelineCommand.DefineFlow oneof=command_type
+    field 4 drop_dataflow_graph message:spark.connect.PipelineCommand.DropDataflowGraph oneof=command_type
+    field 5 start_run message:spark.connect.PipelineCommand.StartRun oneof=command_type
+    field 6 define_sql_graph_elements message:spark.connect.PipelineCommand.DefineSqlGraphElements oneof=command_type
+    field 7 get_query_function_execution_signal_stream message:spark.connect.PipelineCommand.GetQueryFunctionExecutionSignalStream oneof=command_type
+    field 8 define_flow_query_function_result message:spark.connect.PipelineCommand.DefineFlowQueryFunctionResult oneof=command_type
+    field 999 extension message:google.protobuf.Any oneof=command_type
+  msg spark.connect.PipelineCommand.CreateDataflowGraph
+    field 1 default_catalog optional string oneof=_default_catalog
+    field 2 default_database optional string oneof=_default_database
+    field 5 sql_conf repeated message:spark.connect.PipelineCommand.CreateDataflowGraph.SqlConfEntry
+  msg spark.connect.PipelineCommand.CreateDataflowGraph.SqlConfEntry
+    field 1 key string
+    field 2 value string
+  msg spark.connect.PipelineCommand.DefineFlow
+    field 1 dataflow_graph_id optional string oneof=_dataflow_graph_id
+    field 2 flow_name optional string oneof=_flow_name
+    field 3 target_dataset_name optional string oneof=_target_dataset_name
+    field 4 sql_conf repeated message:spark.connect.PipelineCommand.DefineFlow.SqlConfEntry
+    field 5 client_id optional string oneof=_client_id
+    field 6 source_code_location optional message:spark.connect.SourceCodeLocation oneof=_source_code_location
+    field 7 relation_flow_details message:spark.connect.PipelineCommand.DefineFlow.WriteRelationFlowDetails oneof=details
+    field 8 once optional bool oneof=_once
+    field 999 extension message:google.protobuf.Any oneof=details
+  msg spark.connect.PipelineCommand.DefineFlow.Response
+    field 1 flow_name optional string oneof=_flow_name
+  msg spark.connect.PipelineCommand.DefineFlow.SqlConfEntry
+    field 1 key string
+    field 2 value string
+  msg spark.connect.PipelineCommand.DefineFlow.WriteRelationFlowDetails
+    field 1 relation optional message:spark.connect.Relation oneof=_relation
+  msg spark.connect.PipelineCommand.DefineFlowQueryFunctionResult
+    field 1 flow_name optional string oneof=_flow_name
+    field 2 dataflow_graph_id optional string oneof=_dataflow_graph_id
+    field 3 relation optional message:spark.connect.Relation oneof=_relation
+  msg spark.connect.PipelineCommand.DefineOutput
+    field 1 dataflow_graph_id optional string oneof=_dataflow_graph_id
+    field 2 output_name optional string oneof=_output_name
+    field 3 output_type optional enum:spark.connect.OutputType oneof=_output_type
+    field 4 comment optional string oneof=_comment
+    field 5 source_code_location optional message:spark.connect.SourceCodeLocation oneof=_source_code_location
+    field 6 table_details message:spark.connect.PipelineCommand.DefineOutput.TableDetails oneof=details
+    field 7 sink_details message:spark.connect.PipelineCommand.DefineOutput.SinkDetails oneof=details
+    field 999 extension message:google.protobuf.Any oneof=details
+  msg spark.connect.PipelineCommand.DefineOutput.SinkDetails
+    field 1 options repeated message:spark.connect.PipelineCommand.DefineOutput.SinkDetails.OptionsEntry
+    field 2 format optional string oneof=_format
+  msg spark.connect.PipelineCommand.DefineOutput.SinkDetails.OptionsEntry
+    field 1 key string
+    field 2 value string
+  msg spark.connect.PipelineCommand.DefineOutput.TableDetails
+    field 1 table_properties repeated message:spark.connect.PipelineCommand.DefineOutput.TableDetails.TablePropertiesEntry
+    field 2 partition_cols repeated string
+    field 3 format optional string oneof=_format
+    field 4 schema_data_type message:spark.connect.DataType oneof=schema
+    field 5 schema_string string oneof=schema
+    field 6 clustering_columns repeated string
+  msg spark.connect.PipelineCommand.DefineOutput.TableDetails.TablePropertiesEntry
+    field 1 key string
+    field 2 value string
+  msg spark.connect.PipelineCommand.DefineSqlGraphElements
+    field 1 dataflow_graph_id optional string oneof=_dataflow_graph_id
+    field 2 sql_file_path optional string oneof=_sql_file_path
+    field 3 sql_text optional string oneof=_sql_text
+  msg spark.connect.PipelineCommand.DropDataflowGraph
+    field 1 dataflow_graph_id optional string oneof=_dataflow_graph_id
+  msg spark.connect.PipelineCommand.GetQueryFunctionExecutionSignalStream
+    field 1 dataflow_graph_id optional string oneof=_dataflow_graph_id
+    field 2 client_id optional string oneof=_client_id
+  msg spark.connect.PipelineCommand.StartRun
+    field 1 dataflow_graph_id optional string oneof=_dataflow_graph_id
+    field 2 full_refresh_selection repeated string
+    field 3 full_refresh_all optional bool oneof=_full_refresh_all
+    field 4 refresh_selection repeated string
+    field 5 dry optional bool oneof=_dry
+    field 6 storage optional string oneof=_storage
+  msg spark.connect.PipelineCommandResult
+    field 1 create_dataflow_graph_result message:spark.connect.PipelineCommandResult.CreateDataflowGraphResult oneof=result_type
+    field 2 define_output_result message:spark.connect.PipelineCommandResult.DefineOutputResult oneof=result_type
+    field 3 define_flow_result message:spark.connect.PipelineCommandResult.DefineFlowResult oneof=result_type
+  msg spark.connect.PipelineCommandResult.CreateDataflowGraphResult
+    field 1 dataflow_graph_id optional string oneof=_dataflow_graph_id
+  msg spark.connect.PipelineCommandResult.DefineFlowResult
+    field 1 resolved_identifier optional message:spark.connect.ResolvedIdentifier oneof=_resolved_identifier
+  msg spark.connect.PipelineCommandResult.DefineOutputResult
+    field 1 resolved_identifier optional message:spark.connect.ResolvedIdentifier oneof=_resolved_identifier
+  msg spark.connect.PipelineEvent
+    field 1 timestamp message:google.protobuf.Timestamp
+    field 2 message optional string oneof=_message
+  msg spark.connect.PipelineEventResult
+    field 1 event message:spark.connect.PipelineEvent
+  msg spark.connect.PipelineQueryFunctionExecutionSignal
+    field 1 flow_names repeated string
+  msg spark.connect.SourceCodeLocation
+    field 1 file_name optional string oneof=_file_name
+    field 2 line_number optional int32 oneof=_line_number
+    field 3 definition_path optional string oneof=_definition_path
+    field 999 extension repeated message:google.protobuf.Any
+  enum spark.connect.OutputType
+    value 0 OUTPUT_TYPE_UNSPECIFIED
+    value 1 MATERIALIZED_VIEW
+    value 2 TABLE
+    value 3 TEMPORARY_VIEW
+    value 4 SINK
+file spark/connect/relations.proto
+  msg spark.connect.Aggregate
+    field 1 input message:spark.connect.Relation
+    field 2 group_type enum:spark.connect.Aggregate.GroupType
+    field 3 grouping_expressions repeated message:spark.connect.Expression
+    field 4 aggregate_expressions repeated message:spark.connect.Expression
+    field 5 pivot message:spark.connect.Aggregate.Pivot
+    field 6 grouping_sets repeated message:spark.connect.Aggregate.GroupingSets
+    enum spark.connect.Aggregate.GroupType
+      value 0 GROUP_TYPE_UNSPECIFIED
+      value 1 GROUP_TYPE_GROUPBY
+      value 2 GROUP_TYPE_ROLLUP
+      value 3 GROUP_TYPE_CUBE
+      value 4 GROUP_TYPE_PIVOT
+      value 5 GROUP_TYPE_GROUPING_SETS
+  msg spark.connect.Aggregate.GroupingSets
+    field 1 grouping_set repeated message:spark.connect.Expression
+  msg spark.connect.Aggregate.Pivot
+    field 1 col message:spark.connect.Expression
+    field 2 values repeated message:spark.connect.Expression.Literal
+  msg spark.connect.ApplyInPandasWithState
+    field 1 input message:spark.connect.Relation
+    field 2 grouping_expressions repeated message:spark.connect.Expression
+    field 3 func message:spark.connect.CommonInlineUserDefinedFunction
+    field 4 output_schema string
+    field 5 state_schema string
+    field 6 output_mode string
+    field 7 timeout_conf string
+  msg spark.connect.AsOfJoin
+    field 1 left message:spark.connect.Relation
+    field 2 right message:spark.connect.Relation
+    field 3 left_as_of message:spark.connect.Expression
+    field 4 right_as_of message:spark.connect.Expression
+    field 5 join_expr message:spark.connect.Expression
+    field 6 using_columns repeated string
+    field 7 join_type string
+    field 8 tolerance message:spark.connect.Expression
+    field 9 allow_exact_matches bool
+    field 10 direction string
+  msg spark.connect.CachedLocalRelation
+    field 3 hash string
+  msg spark.connect.CachedRemoteRelation
+    field 1 relation_id string
+  msg spark.connect.ChunkedCachedLocalRelation
+    field 1 dataHashes repeated string
+    field 2 schemaHash optional string oneof=_schemaHash
+  msg spark.connect.CoGroupMap
+    field 1 input message:spark.connect.Relation
+    field 2 input_grouping_expressions repeated message:spark.connect.Expression
+    field 3 other message:spark.connect.Relation
+    field 4 other_grouping_expressions repeated message:spark.connect.Expression
+    field 5 func message:spark.connect.CommonInlineUserDefinedFunction
+    field 6 input_sorting_expressions repeated message:spark.connect.Expression
+    field 7 other_sorting_expressions repeated message:spark.connect.Expression
+  msg spark.connect.CollectMetrics
+    field 1 input message:spark.connect.Relation
+    field 2 name string
+    field 3 metrics repeated message:spark.connect.Expression
+  msg spark.connect.CommonInlineUserDefinedDataSource
+    field 1 name string
+    field 2 python_data_source message:spark.connect.PythonDataSource oneof=data_source
+  msg spark.connect.CommonInlineUserDefinedTableFunction
+    field 1 function_name string
+    field 2 deterministic bool
+    field 3 arguments repeated message:spark.connect.Expression
+    field 4 python_udtf message:spark.connect.PythonUDTF oneof=function
+  msg spark.connect.Deduplicate
+    field 1 input message:spark.connect.Relation
+    field 2 column_names repeated string
+    field 3 all_columns_as_keys optional bool oneof=_all_columns_as_keys
+    field 4 within_watermark optional bool oneof=_within_watermark
+  msg spark.connect.Drop
+    field 1 input message:spark.connect.Relation
+    field 2 columns repeated message:spark.connect.Expression
+    field 3 column_names repeated string
+  msg spark.connect.Fetch
+    field 1 obj_ref message:spark.connect.ObjectRef
+    field 2 methods repeated message:spark.connect.Fetch.Method
+  msg spark.connect.Fetch.Method
+    field 1 method string
+    field 2 args repeated message:spark.connect.Fetch.Method.Args
+  msg spark.connect.Fetch.Method.Args
+    field 1 param message:spark.connect.Expression.Literal oneof=args_type
+    field 2 input message:spark.connect.Relation oneof=args_type
+  msg spark.connect.Filter
+    field 1 input message:spark.connect.Relation
+    field 2 condition message:spark.connect.Expression
+  msg spark.connect.GroupMap
+    field 1 input message:spark.connect.Relation
+    field 2 grouping_expressions repeated message:spark.connect.Expression
+    field 3 func message:spark.connect.CommonInlineUserDefinedFunction
+    field 4 sorting_expressions repeated message:spark.connect.Expression
+    field 5 initial_input message:spark.connect.Relation
+    field 6 initial_grouping_expressions repeated message:spark.connect.Expression
+    field 7 is_map_groups_with_state optional bool oneof=_is_map_groups_with_state
+    field 8 output_mode optional string oneof=_output_mode
+    field 9 timeout_conf optional string oneof=_timeout_conf
+    field 10 state_schema optional message:spark.connect.DataType oneof=_state_schema
+    field 11 transform_with_state_info optional message:spark.connect.TransformWithStateInfo oneof=_transform_with_state_info
+  msg spark.connect.Hint
+    field 1 input message:spark.connect.Relation
+    field 2 name string
+    field 3 parameters repeated message:spark.connect.Expression
+  msg spark.connect.HtmlString
+    field 1 input message:spark.connect.Relation
+    field 2 num_rows int32
+    field 3 truncate int32
+  msg spark.connect.Join
+    field 1 left message:spark.connect.Relation
+    field 2 right message:spark.connect.Relation
+    field 3 join_condition message:spark.connect.Expression
+    field 4 join_type enum:spark.connect.Join.JoinType
+    field 5 using_columns repeated string
+    field 6 join_data_type optional message:spark.connect.Join.JoinDataType oneof=_join_data_type
+    enum spark.connect.Join.JoinType
+      value 0 JOIN_TYPE_UNSPECIFIED
+      value 1 JOIN_TYPE_INNER
+      value 2 JOIN_TYPE_FULL_OUTER
+      value 3 JOIN_TYPE_LEFT_OUTER
+      value 4 JOIN_TYPE_RIGHT_OUTER
+      value 5 JOIN_TYPE_LEFT_ANTI
+      value 6 JOIN_TYPE_LEFT_SEMI
+      value 7 JOIN_TYPE_CROSS
+  msg spark.connect.Join.JoinDataType
+    field 1 is_left_struct bool
+    field 2 is_right_struct bool
+  msg spark.connect.LateralJoin
+    field 1 left message:spark.connect.Relation
+    field 2 right message:spark.connect.Relation
+    field 3 join_condition message:spark.connect.Expression
+    field 4 join_type enum:spark.connect.Join.JoinType
+  msg spark.connect.Limit
+    field 1 input message:spark.connect.Relation
+    field 2 limit int32
+  msg spark.connect.LocalRelation
+    field 1 data optional bytes oneof=_data
+    field 2 schema optional string oneof=_schema
+  msg spark.connect.MapPartitions
+    field 1 input message:spark.connect.Relation
+    field 2 func message:spark.connect.CommonInlineUserDefinedFunction
+    field 3 is_barrier optional bool oneof=_is_barrier
+    field 4 profile_id optional int32 oneof=_profile_id
+  msg spark.connect.MlRelation
+    field 1 transform message:spark.connect.MlRelation.Transform oneof=ml_type
+    field 2 fetch message:spark.connect.Fetch oneof=ml_type
+    field 3 model_summary_dataset optional message:spark.connect.Relation oneof=_model_summary_dataset
+  msg spark.connect.MlRelation.Transform
+    field 1 obj_ref message:spark.connect.ObjectRef oneof=operator
+    field 2 transformer message:spark.connect.MlOperator oneof=operator
+    field 3 input message:spark.connect.Relation
+    field 4 params message:spark.connect.MlParams
+  msg spark.connect.NADrop
+    field 1 input message:spark.connect.Relation
+    field 2 cols repeated string
+    field 3 min_non_nulls optional int32 oneof=_min_non_nulls
+  msg spark.connect.NAFill
+    field 1 input message:spark.connect.Relation
+    field 2 cols repeated string
+    field 3 values repeated message:spark.connect.Expression.Literal
+  msg spark.connect.NAReplace
+    field 1 input message:spark.connect.Relation
+    field 2 cols repeated string
+    field 3 replacements repeated message:spark.connect.NAReplace.Replacement
+  msg spark.connect.NAReplace.Replacement
+    field 1 old_value message:spark.connect.Expression.Literal
+    field 2 new_value message:spark.connect.Expression.Literal
+  msg spark.connect.Offset
+    field 1 input message:spark.connect.Relation
+    field 2 offset int32
+  msg spark.connect.Parse
+    field 1 input message:spark.connect.Relation
+    field 2 format enum:spark.connect.Parse.ParseFormat
+    field 3 schema optional message:spark.connect.DataType oneof=_schema
+    field 4 options repeated message:spark.connect.Parse.OptionsEntry
+    enum spark.connect.Parse.ParseFormat
+      value 0 PARSE_FORMAT_UNSPECIFIED
+      value 1 PARSE_FORMAT_CSV
+      value 2 PARSE_FORMAT_JSON
+  msg spark.connect.Parse.OptionsEntry
+    field 1 key string
+    field 2 value string
+  msg spark.connect.Project
+    field 1 input message:spark.connect.Relation
+    field 3 expressions repeated message:spark.connect.Expression
+  msg spark.connect.PythonDataSource
+    field 1 command bytes
+    field 2 python_ver string
+  msg spark.connect.PythonUDTF
+    field 1 return_type optional message:spark.connect.DataType oneof=_return_type
+    field 2 eval_type int32
+    field 3 command bytes
+    field 4 python_ver string
+  msg spark.connect.Range
+    field 1 start optional int64 oneof=_start
+    field 2 end int64
+    field 3 step int64
+    field 4 num_partitions optional int32 oneof=_num_partitions
+  msg spark.connect.Read
+    field 1 named_table message:spark.connect.Read.NamedTable oneof=read_type
+    field 2 data_source message:spark.connect.Read.DataSource oneof=read_type
+    field 3 is_streaming bool
+  msg spark.connect.Read.DataSource
+    field 1 format optional string oneof=_format
+    field 2 schema optional string oneof=_schema
+    field 3 options repeated message:spark.connect.Read.DataSource.OptionsEntry
+    field 4 paths repeated string
+    field 5 predicates repeated string
+  msg spark.connect.Read.DataSource.OptionsEntry
+    field 1 key string
+    field 2 value string
+  msg spark.connect.Read.NamedTable
+    field 1 unparsed_identifier string
+    field 2 options repeated message:spark.connect.Read.NamedTable.OptionsEntry
+  msg spark.connect.Read.NamedTable.OptionsEntry
+    field 1 key string
+    field 2 value string
+  msg spark.connect.Relation
+    field 1 common message:spark.connect.RelationCommon
+    field 2 read message:spark.connect.Read oneof=rel_type
+    field 3 project message:spark.connect.Project oneof=rel_type
+    field 4 filter message:spark.connect.Filter oneof=rel_type
+    field 5 join message:spark.connect.Join oneof=rel_type
+    field 6 set_op message:spark.connect.SetOperation oneof=rel_type
+    field 7 sort message:spark.connect.Sort oneof=rel_type
+    field 8 limit message:spark.connect.Limit oneof=rel_type
+    field 9 aggregate message:spark.connect.Aggregate oneof=rel_type
+    field 10 sql message:spark.connect.SQL oneof=rel_type
+    field 11 local_relation message:spark.connect.LocalRelation oneof=rel_type
+    field 12 sample message:spark.connect.Sample oneof=rel_type
+    field 13 offset message:spark.connect.Offset oneof=rel_type
+    field 14 deduplicate message:spark.connect.Deduplicate oneof=rel_type
+    field 15 range message:spark.connect.Range oneof=rel_type
+    field 16 subquery_alias message:spark.connect.SubqueryAlias oneof=rel_type
+    field 17 repartition message:spark.connect.Repartition oneof=rel_type
+    field 18 to_df message:spark.connect.ToDF oneof=rel_type
+    field 19 with_columns_renamed message:spark.connect.WithColumnsRenamed oneof=rel_type
+    field 20 show_string message:spark.connect.ShowString oneof=rel_type
+    field 21 drop message:spark.connect.Drop oneof=rel_type
+    field 22 tail message:spark.connect.Tail oneof=rel_type
+    field 23 with_columns message:spark.connect.WithColumns oneof=rel_type
+    field 24 hint message:spark.connect.Hint oneof=rel_type
+    field 25 unpivot message:spark.connect.Unpivot oneof=rel_type
+    field 26 to_schema message:spark.connect.ToSchema oneof=rel_type
+    field 27 repartition_by_expression message:spark.connect.RepartitionByExpression oneof=rel_type
+    field 28 map_partitions message:spark.connect.MapPartitions oneof=rel_type
+    field 29 collect_metrics message:spark.connect.CollectMetrics oneof=rel_type
+    field 30 parse message:spark.connect.Parse oneof=rel_type
+    field 31 group_map message:spark.connect.GroupMap oneof=rel_type
+    field 32 co_group_map message:spark.connect.CoGroupMap oneof=rel_type
+    field 33 with_watermark message:spark.connect.WithWatermark oneof=rel_type
+    field 34 apply_in_pandas_with_state message:spark.connect.ApplyInPandasWithState oneof=rel_type
+    field 35 html_string message:spark.connect.HtmlString oneof=rel_type
+    field 36 cached_local_relation message:spark.connect.CachedLocalRelation oneof=rel_type
+    field 37 cached_remote_relation message:spark.connect.CachedRemoteRelation oneof=rel_type
+    field 38 common_inline_user_defined_table_function message:spark.connect.CommonInlineUserDefinedTableFunction oneof=rel_type
+    field 39 as_of_join message:spark.connect.AsOfJoin oneof=rel_type
+    field 40 common_inline_user_defined_data_source message:spark.connect.CommonInlineUserDefinedDataSource oneof=rel_type
+    field 41 with_relations message:spark.connect.WithRelations oneof=rel_type
+    field 42 transpose message:spark.connect.Transpose oneof=rel_type
+    field 43 unresolved_table_valued_function message:spark.connect.UnresolvedTableValuedFunction oneof=rel_type
+    field 44 lateral_join message:spark.connect.LateralJoin oneof=rel_type
+    field 45 chunked_cached_local_relation message:spark.connect.ChunkedCachedLocalRelation oneof=rel_type
+    field 90 fill_na message:spark.connect.NAFill oneof=rel_type
+    field 91 drop_na message:spark.connect.NADrop oneof=rel_type
+    field 92 replace message:spark.connect.NAReplace oneof=rel_type
+    field 100 summary message:spark.connect.StatSummary oneof=rel_type
+    field 101 crosstab message:spark.connect.StatCrosstab oneof=rel_type
+    field 102 describe message:spark.connect.StatDescribe oneof=rel_type
+    field 103 cov message:spark.connect.StatCov oneof=rel_type
+    field 104 corr message:spark.connect.StatCorr oneof=rel_type
+    field 105 approx_quantile message:spark.connect.StatApproxQuantile oneof=rel_type
+    field 106 freq_items message:spark.connect.StatFreqItems oneof=rel_type
+    field 107 sample_by message:spark.connect.StatSampleBy oneof=rel_type
+    field 200 catalog message:spark.connect.Catalog oneof=rel_type
+    field 300 ml_relation message:spark.connect.MlRelation oneof=rel_type
+    field 998 extension message:google.protobuf.Any oneof=rel_type
+    field 999 unknown message:spark.connect.Unknown oneof=rel_type
+  msg spark.connect.RelationCommon
+    field 1 source_info string
+    field 2 plan_id optional int64 oneof=_plan_id
+    field 3 origin message:spark.connect.Origin
+  msg spark.connect.Repartition
+    field 1 input message:spark.connect.Relation
+    field 2 num_partitions int32
+    field 3 shuffle optional bool oneof=_shuffle
+  msg spark.connect.RepartitionByExpression
+    field 1 input message:spark.connect.Relation
+    field 2 partition_exprs repeated message:spark.connect.Expression
+    field 3 num_partitions optional int32 oneof=_num_partitions
+  msg spark.connect.SQL
+    field 1 query string
+    field 2 args repeated message:spark.connect.SQL.ArgsEntry
+    field 3 pos_args repeated message:spark.connect.Expression.Literal
+    field 4 named_arguments repeated message:spark.connect.SQL.NamedArgumentsEntry
+    field 5 pos_arguments repeated message:spark.connect.Expression
+  msg spark.connect.SQL.ArgsEntry
+    field 1 key string
+    field 2 value message:spark.connect.Expression.Literal
+  msg spark.connect.SQL.NamedArgumentsEntry
+    field 1 key string
+    field 2 value message:spark.connect.Expression
+  msg spark.connect.Sample
+    field 1 input message:spark.connect.Relation
+    field 2 lower_bound double
+    field 3 upper_bound double
+    field 4 with_replacement optional bool oneof=_with_replacement
+    field 5 seed optional int64 oneof=_seed
+    field 6 deterministic_order bool
+  msg spark.connect.SetOperation
+    field 1 left_input message:spark.connect.Relation
+    field 2 right_input message:spark.connect.Relation
+    field 3 set_op_type enum:spark.connect.SetOperation.SetOpType
+    field 4 is_all optional bool oneof=_is_all
+    field 5 by_name optional bool oneof=_by_name
+    field 6 allow_missing_columns optional bool oneof=_allow_missing_columns
+    enum spark.connect.SetOperation.SetOpType
+      value 0 SET_OP_TYPE_UNSPECIFIED
+      value 1 SET_OP_TYPE_INTERSECT
+      value 2 SET_OP_TYPE_UNION
+      value 3 SET_OP_TYPE_EXCEPT
+  msg spark.connect.ShowString
+    field 1 input message:spark.connect.Relation
+    field 2 num_rows int32
+    field 3 truncate int32
+    field 4 vertical bool
+  msg spark.connect.Sort
+    field 1 input message:spark.connect.Relation
+    field 2 order repeated message:spark.connect.Expression.SortOrder
+    field 3 is_global optional bool oneof=_is_global
+  msg spark.connect.StatApproxQuantile
+    field 1 input message:spark.connect.Relation
+    field 2 cols repeated string
+    field 3 probabilities repeated double
+    field 4 relative_error double
+  msg spark.connect.StatCorr
+    field 1 input message:spark.connect.Relation
+    field 2 col1 string
+    field 3 col2 string
+    field 4 method optional string oneof=_method
+  msg spark.connect.StatCov
+    field 1 input message:spark.connect.Relation
+    field 2 col1 string
+    field 3 col2 string
+  msg spark.connect.StatCrosstab
+    field 1 input message:spark.connect.Relation
+    field 2 col1 string
+    field 3 col2 string
+  msg spark.connect.StatDescribe
+    field 1 input message:spark.connect.Relation
+    field 2 cols repeated string
+  msg spark.connect.StatFreqItems
+    field 1 input message:spark.connect.Relation
+    field 2 cols repeated string
+    field 3 support optional double oneof=_support
+  msg spark.connect.StatSampleBy
+    field 1 input message:spark.connect.Relation
+    field 2 col message:spark.connect.Expression
+    field 3 fractions repeated message:spark.connect.StatSampleBy.Fraction
+    field 5 seed optional int64 oneof=_seed
+  msg spark.connect.StatSampleBy.Fraction
+    field 1 stratum message:spark.connect.Expression.Literal
+    field 2 fraction double
+  msg spark.connect.StatSummary
+    field 1 input message:spark.connect.Relation
+    field 2 statistics repeated string
+  msg spark.connect.SubqueryAlias
+    field 1 input message:spark.connect.Relation
+    field 2 alias string
+    field 3 qualifier repeated string
+  msg spark.connect.Tail
+    field 1 input message:spark.connect.Relation
+    field 2 limit int32
+  msg spark.connect.ToDF
+    field 1 input message:spark.connect.Relation
+    field 2 column_names repeated string
+  msg spark.connect.ToSchema
+    field 1 input message:spark.connect.Relation
+    field 2 schema message:spark.connect.DataType
+  msg spark.connect.TransformWithStateInfo
+    field 1 time_mode string
+    field 2 event_time_column_name optional string oneof=_event_time_column_name
+    field 3 output_schema optional message:spark.connect.DataType oneof=_output_schema
+  msg spark.connect.Transpose
+    field 1 input message:spark.connect.Relation
+    field 2 index_columns repeated message:spark.connect.Expression
+  msg spark.connect.Unknown
+  msg spark.connect.Unpivot
+    field 1 input message:spark.connect.Relation
+    field 2 ids repeated message:spark.connect.Expression
+    field 3 values optional message:spark.connect.Unpivot.Values oneof=_values
+    field 4 variable_column_name string
+    field 5 value_column_name string
+  msg spark.connect.Unpivot.Values
+    field 1 values repeated message:spark.connect.Expression
+  msg spark.connect.UnresolvedTableValuedFunction
+    field 1 function_name string
+    field 2 arguments repeated message:spark.connect.Expression
+  msg spark.connect.WithColumns
+    field 1 input message:spark.connect.Relation
+    field 2 aliases repeated message:spark.connect.Expression.Alias
+  msg spark.connect.WithColumnsRenamed
+    field 1 input message:spark.connect.Relation
+    field 2 rename_columns_map repeated message:spark.connect.WithColumnsRenamed.RenameColumnsMapEntry
+    field 3 renames repeated message:spark.connect.WithColumnsRenamed.Rename
+  msg spark.connect.WithColumnsRenamed.Rename
+    field 1 col_name string
+    field 2 new_col_name string
+  msg spark.connect.WithColumnsRenamed.RenameColumnsMapEntry
+    field 1 key string
+    field 2 value string
+  msg spark.connect.WithRelations
+    field 1 root message:spark.connect.Relation
+    field 2 references repeated message:spark.connect.Relation
+  msg spark.connect.WithWatermark
+    field 1 input message:spark.connect.Relation
+    field 2 event_time string
+    field 3 delay_threshold string
+file spark/connect/types.proto
+  msg spark.connect.DataType
+    field 1 null message:spark.connect.DataType.NULL oneof=kind
+    field 2 binary message:spark.connect.DataType.Binary oneof=kind
+    field 3 boolean message:spark.connect.DataType.Boolean oneof=kind
+    field 4 byte message:spark.connect.DataType.Byte oneof=kind
+    field 5 short message:spark.connect.DataType.Short oneof=kind
+    field 6 integer message:spark.connect.DataType.Integer oneof=kind
+    field 7 long message:spark.connect.DataType.Long oneof=kind
+    field 8 float message:spark.connect.DataType.Float oneof=kind
+    field 9 double message:spark.connect.DataType.Double oneof=kind
+    field 10 decimal message:spark.connect.DataType.Decimal oneof=kind
+    field 11 string message:spark.connect.DataType.String oneof=kind
+    field 12 char message:spark.connect.DataType.Char oneof=kind
+    field 13 var_char message:spark.connect.DataType.VarChar oneof=kind
+    field 14 date message:spark.connect.DataType.Date oneof=kind
+    field 15 timestamp message:spark.connect.DataType.Timestamp oneof=kind
+    field 16 timestamp_ntz message:spark.connect.DataType.TimestampNTZ oneof=kind
+    field 17 calendar_interval message:spark.connect.DataType.CalendarInterval oneof=kind
+    field 18 year_month_interval message:spark.connect.DataType.YearMonthInterval oneof=kind
+    field 19 day_time_interval message:spark.connect.DataType.DayTimeInterval oneof=kind
+    field 20 array message:spark.connect.DataType.Array oneof=kind
+    field 21 struct message:spark.connect.DataType.Struct oneof=kind
+    field 22 map message:spark.connect.DataType.Map oneof=kind
+    field 23 udt message:spark.connect.DataType.UDT oneof=kind
+    field 24 unparsed message:spark.connect.DataType.Unparsed oneof=kind
+    field 25 variant message:spark.connect.DataType.Variant oneof=kind
+    field 26 geometry message:spark.connect.DataType.Geometry oneof=kind
+    field 27 geography message:spark.connect.DataType.Geography oneof=kind
+    field 28 time message:spark.connect.DataType.Time oneof=kind
+  msg spark.connect.DataType.Array
+    field 1 element_type message:spark.connect.DataType
+    field 2 contains_null bool
+    field 3 type_variation_reference uint32
+  msg spark.connect.DataType.Binary
+    field 1 type_variation_reference uint32
+  msg spark.connect.DataType.Boolean
+    field 1 type_variation_reference uint32
+  msg spark.connect.DataType.Byte
+    field 1 type_variation_reference uint32
+  msg spark.connect.DataType.CalendarInterval
+    field 1 type_variation_reference uint32
+  msg spark.connect.DataType.Char
+    field 1 length int32
+    field 2 type_variation_reference uint32
+  msg spark.connect.DataType.Date
+    field 1 type_variation_reference uint32
+  msg spark.connect.DataType.DayTimeInterval
+    field 1 start_field optional int32 oneof=_start_field
+    field 2 end_field optional int32 oneof=_end_field
+    field 3 type_variation_reference uint32
+  msg spark.connect.DataType.Decimal
+    field 1 scale optional int32 oneof=_scale
+    field 2 precision optional int32 oneof=_precision
+    field 3 type_variation_reference uint32
+  msg spark.connect.DataType.Double
+    field 1 type_variation_reference uint32
+  msg spark.connect.DataType.Float
+    field 1 type_variation_reference uint32
+  msg spark.connect.DataType.Geography
+    field 1 srid int32
+    field 2 type_variation_reference uint32
+  msg spark.connect.DataType.Geometry
+    field 1 srid int32
+    field 2 type_variation_reference uint32
+  msg spark.connect.DataType.Integer
+    field 1 type_variation_reference uint32
+  msg spark.connect.DataType.Long
+    field 1 type_variation_reference uint32
+  msg spark.connect.DataType.Map
+    field 1 key_type message:spark.connect.DataType
+    field 2 value_type message:spark.connect.DataType
+    field 3 value_contains_null bool
+    field 4 type_variation_reference uint32
+  msg spark.connect.DataType.NULL
+    field 1 type_variation_reference uint32
+  msg spark.connect.DataType.Short
+    field 1 type_variation_reference uint32
+  msg spark.connect.DataType.String
+    field 1 type_variation_reference uint32
+    field 2 collation string
+  msg spark.connect.DataType.Struct
+    field 1 fields repeated message:spark.connect.DataType.StructField
+    field 2 type_variation_reference uint32
+  msg spark.connect.DataType.StructField
+    field 1 name string
+    field 2 data_type message:spark.connect.DataType
+    field 3 nullable bool
+    field 4 metadata optional string oneof=_metadata
+  msg spark.connect.DataType.Time
+    field 1 precision optional int32 oneof=_precision
+    field 2 type_variation_reference uint32
+  msg spark.connect.DataType.Timestamp
+    field 1 type_variation_reference uint32
+  msg spark.connect.DataType.TimestampNTZ
+    field 1 type_variation_reference uint32
+  msg spark.connect.DataType.UDT
+    field 1 type string
+    field 2 jvm_class optional string oneof=_jvm_class
+    field 3 python_class optional string oneof=_python_class
+    field 4 serialized_python_class optional string oneof=_serialized_python_class
+    field 5 sql_type optional message:spark.connect.DataType oneof=_sql_type
+  msg spark.connect.DataType.Unparsed
+    field 1 data_type_string string
+  msg spark.connect.DataType.VarChar
+    field 1 length int32
+    field 2 type_variation_reference uint32
+  msg spark.connect.DataType.Variant
+    field 1 type_variation_reference uint32
+  msg spark.connect.DataType.YearMonthInterval
+    field 1 start_field optional int32 oneof=_start_field
+    field 2 end_field optional int32 oneof=_end_field
+    field 3 type_variation_reference uint32

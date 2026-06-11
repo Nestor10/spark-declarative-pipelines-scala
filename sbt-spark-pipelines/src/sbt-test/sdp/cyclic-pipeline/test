@@ -1,0 +1,2 @@
+# A cyclic pipeline graph must FAIL the build (with the cycle path in the log).
+-> sdpManifest
