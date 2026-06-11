@@ -9,8 +9,8 @@
 set -euo pipefail
 EXAMPLE="${1:-../sdp-example}"
 
-echo "▸ publishing sdp-core, sdp-runtime-dsl, sbt-spark-pipelines (Local + M2)…"
-sbt --client "sdpCore/publishLocal; sdpCore/publishM2; sdpRuntimeDsl/publishLocal; sdpRuntimeDsl/publishM2; sbtSparkPipelines/publishLocal; sbtSparkPipelines/publishM2" >/dev/null
+echo "▸ publishing sdp-core, sdp-runtime-dsl, sdp-connect, sbt-spark-pipelines (Local + M2)…"
+sbt --client "sdpCore/publishLocal; sdpCore/publishM2; sdpRuntimeDsl/publishLocal; sdpRuntimeDsl/publishM2; sdpConnect/publishLocal; sdpConnect/publishM2; sbtSparkPipelines/publishLocal; sbtSparkPipelines/publishM2" >/dev/null
 
 echo "▸ evicting dev.sdp from ivy + coursier caches…"
 rm -rf ~/.ivy2/cache/dev.sdp 2>/dev/null || true
