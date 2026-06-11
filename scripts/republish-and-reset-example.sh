@@ -12,9 +12,11 @@ EXAMPLE="${1:-../sdp-example}"
 echo "▸ publishing sdp-core, sdp-runtime-dsl, sdp-connect, sbt-spark-pipelines (Local + M2)…"
 sbt --client "sdpCore/publishLocal; sdpCore/publishM2; sdpRuntimeDsl/publishLocal; sdpRuntimeDsl/publishM2; sdpConnect/publishLocal; sdpConnect/publishM2; sbtSparkPipelines/publishLocal; sbtSparkPipelines/publishM2" >/dev/null
 
-echo "▸ evicting dev.sdp from ivy + coursier caches…"
-rm -rf ~/.ivy2/cache/dev.sdp 2>/dev/null || true
-find ~/Library/Caches/Coursier -path "*dev/sdp*" -prune -exec rm -rf {} + 2>/dev/null || true
+echo "▸ evicting io.github.nestor10 from ivy + coursier caches…"
+# Maven groupId is io.github.nestor10 (Scala packages stay dev.sdp). Also clean
+# any leftover dev.sdp artifacts from before the groupId change — harmless if absent.
+rm -rf ~/.ivy2/cache/io.github.nestor10 ~/.ivy2/cache/dev.sdp 2>/dev/null || true
+find ~/Library/Caches/Coursier \( -path "*io/github/nestor10*" -o -path "*dev/sdp*" \) -prune -exec rm -rf {} + 2>/dev/null || true
 
 if [ -d "$EXAMPLE" ]; then
   echo "▸ clearing $EXAMPLE metabuild + build targets…"

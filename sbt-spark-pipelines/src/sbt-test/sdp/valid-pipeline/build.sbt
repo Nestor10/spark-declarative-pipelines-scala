@@ -13,7 +13,7 @@ lazy val root = (project in file("."))
     scalaVersion := "3.8.4",
     // sdp-runtime-dsl + sdp-connect are auto-injected by the plugin in lockstep;
     // declaring the DSL explicitly here is harmless and documents the surface.
-    libraryDependencies += "dev.sdp" %% "sdp-runtime-dsl" % pluginVersion,
+    libraryDependencies += "io.github.nestor10" %% "sdp-runtime-dsl" % pluginVersion,
     // The pipeline object the plugin evaluates (classload-eval, D10).
     sdpPipelineClass := "pipelines.Warehouse",
 

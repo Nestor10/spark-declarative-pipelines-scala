@@ -12,7 +12,7 @@ reach a cluster. The plugin is a dev-loop convenience over the same code the
 
 ```scala
 // project/plugins.sbt
-addSbtPlugin("dev.sdp" % "sbt-spark-pipelines" % <version>)
+addSbtPlugin("io.github.nestor10" % "sbt-spark-pipelines" % <version>)
 
 // build.sbt
 lazy val myPipelines = (project in file("."))

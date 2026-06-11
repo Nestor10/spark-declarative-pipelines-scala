@@ -23,9 +23,58 @@
 // jar, scheduled by Argo/K8s, with no sbt on the path (D10).
 // =====================================================================
 
-ThisBuild / organization := "dev.sdp"           // TODO: replace with real org coords before first publish
+// Maven coordinates. Central's GitHub-verified namespace for github.com/Nestor10.
+// NOTE: this is the Maven groupId ONLY — the Scala package names stay `dev.sdp.*`.
+// The plugin bakes this value into `SdpBuildInfo.organization` (sourceGenerator
+// below) so the version-lockstep injection emits matching coordinates.
+ThisBuild / organization := "io.github.nestor10"
+// Dev default is a SNAPSHOT. For a tagged release, override per RELEASING.md:
+//   sbt 'set ThisBuild / version := "0.1.0"' ...
 ThisBuild / version      := "0.1.0-SNAPSHOT"
 ThisBuild / scalaVersion := "3.8.4"
+
+// ---------------------------------------------------------------------
+// Publishing / POM metadata — required for Maven Central (Sonatype
+// Central Portal). Applied to the three published library/plugin modules
+// via `publishSettings` below; the root aggregate sets `publish / skip`.
+// ---------------------------------------------------------------------
+ThisBuild / versionScheme := Some("early-semver")
+ThisBuild / homepage      := Some(url("https://github.com/Nestor10/spark-declarative-pipelines-scala"))
+ThisBuild / licenses      := Seq(
+  "Apache-2.0" -> url("https://www.apache.org/licenses/LICENSE-2.0")
+)
+ThisBuild / scmInfo := Some(
+  ScmInfo(
+    url("https://github.com/Nestor10/spark-declarative-pipelines-scala"),
+    "scm:git:git@github.com:Nestor10/spark-declarative-pipelines-scala.git",
+  )
+)
+ThisBuild / developers := List(
+  Developer(
+    id = "Nestor10",
+    name = "Eric Smith",
+    email = "ericsmith.lpi@gmail.com",
+    url = url("https://github.com/Nestor10"),
+  )
+)
+
+// Shared publish settings for the published modules. Central requires a
+// standard Maven POM plus sources + javadoc jars (sbt produces both by
+// default — we just don't disable them). Sonatype Central Portal hosts
+// the staging repo; the actual upload is driven from RELEASING.md.
+lazy val publishSettings = Seq(
+  publishMavenStyle := true,
+  // Where `publish` (not publishLocal / publishM2) sends artifacts. The
+  // Central Portal accepts a signed bundle; see RELEASING.md for both the
+  // plugin-driven and manual-bundle routes.
+  publishTo := {
+    val central = "https://central.sonatype.com"
+    if (isSnapshot.value)
+      Some("central-snapshots".at(s"$central/repository/maven-snapshots/"))
+    else
+      Some("central-releases".at(s"$central/api/v1/publisher/"))
+  },
+)
 
 ThisBuild / scalacOptions ++= Seq(
   "-deprecation",
@@ -43,6 +92,7 @@ val zioVersion = "2.1.15"  // TODO: verify against the latest 2.1.x before mergi
 // sdp-core — pure Domain + ZIO Application Services
 // ---------------------------------------------------------------------
 lazy val sdpCore = (project in file("sdp-core"))
+  .settings(publishSettings)
   .settings(
     name := "sdp-core",
     libraryDependencies ++= Seq(
@@ -60,6 +110,7 @@ lazy val sdpCore = (project in file("sdp-core"))
 // ---------------------------------------------------------------------
 lazy val sdpRuntimeDsl = (project in file("sdp-runtime-dsl"))
   .dependsOn(sdpCore)
+  .settings(publishSettings)
   .settings(
     name := "sdp-runtime-dsl",
     libraryDependencies ++= Seq(
@@ -79,6 +130,7 @@ lazy val sdpRuntimeDsl = (project in file("sdp-runtime-dsl"))
 // ---------------------------------------------------------------------
 lazy val sdpConnect = (project in file("sdp-connect"))
   .dependsOn(sdpCore)
+  .settings(publishSettings)
   .settings(
     name := "sdp-connect",
     libraryDependencies ++= Seq(
@@ -127,6 +179,7 @@ lazy val sdpConnect = (project in file("sdp-connect"))
 lazy val sbtSparkPipelines = (project in file("sbt-spark-pipelines"))
   .dependsOn(sdpCore, sdpConnect)
   .enablePlugins(SbtPlugin)
+  .settings(publishSettings)
   .settings(
     name := "sbt-spark-pipelines",
     libraryDependencies ++= Seq(

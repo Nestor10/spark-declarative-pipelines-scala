@@ -114,7 +114,7 @@ every capability claim names a real wire field. It also prints the coverage repo
 sbt 'sdpCore/publishLocal; sdpRuntimeDsl/publishLocal; sbtSparkPipelines/publishLocal'
 ```
 
-Then a scratch project (`project/plugins.sbt` → `addSbtPlugin("dev.sdp" % "sbt-spark-pipelines"
+Then a scratch project (`project/plugins.sbt` → `addSbtPlugin("io.github.nestor10" % "sbt-spark-pipelines"
 % "0.1.0-SNAPSHOT")`) can exercise the real task flow. **SNAPSHOT + warm caches caveat:** after
 republishing changed macro/helper code, restart the scratch project's sbt server — and read
 `DECISIONS.md` D6 (CoreEpoch) before assuming staleness is your bug.
