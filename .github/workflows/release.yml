@@ -1,0 +1,38 @@
+name: Release
+
+# Tag-driven (stolen from fishy-mcp, adapted to sbt 2): pushing vX.Y.Z
+# publishes BOTH artifacts (sdp + sbt-spark-pipelines) to Maven Central via
+# sbt-ci-release. Secrets are the same four fishy-mcp uses — the
+# io.github.nestor10 namespace and PGP key are already established there.
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # sbt-dynver needs full history to derive the version
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: sbt
+
+      - name: Setup sbt
+        uses: sbt/setup-sbt@v1
+
+      - name: Publish to Maven Central
+        env:
+          SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
+          SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
+          PGP_PASSPHRASE: ${{ secrets.PGP_PASSPHRASE }}
+          PGP_SECRET: ${{ secrets.PGP_SECRET }}
+          CI: true
+        run: sbt ci-release

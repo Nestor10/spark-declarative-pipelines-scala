@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: sbt
+
+      - name: Setup sbt
+        uses: sbt/setup-sbt@v1
+
+      - name: Compile
+        run: sbt Test/compile
+
+      - name: Library tests
+        run: sbt sdp/testFull
+
+      # The plugin's real test is the scripted suite: sandbox consumer builds
+      # that publishLocal sdp + the plugin, then exercise classload-eval
+      # discovery, validation, caching, and cycle detection.
+      - name: Plugin scripted tests
+        run: sbt sbtSparkPipelines/scripted

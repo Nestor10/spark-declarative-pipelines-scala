@@ -28,9 +28,9 @@
 // The plugin bakes this value into `SdpBuildInfo.organization` (sourceGenerator
 // below) so the version-lockstep injection emits matching coordinates.
 ThisBuild / organization := "io.github.nestor10"
-// Dev default is a SNAPSHOT. For a tagged release, override per RELEASING.md:
-//   sbt 'set ThisBuild / version := "0.1.0"' ...
-ThisBuild / version      := "0.1.0-SNAPSHOT"
+// Version is OWNED BY sbt-dynver (via sbt-ci-release): a `vX.Y.Z` git tag
+// publishes X.Y.Z; between tags you get X.Y.Z+N-<hash>-SNAPSHOT. Do not set
+// `ThisBuild / version` — see RELEASING.md.
 ThisBuild / scalaVersion := "3.8.4"
 
 // ---------------------------------------------------------------------
@@ -62,18 +62,10 @@ ThisBuild / developers := List(
 // standard Maven POM plus sources + javadoc jars (sbt produces both by
 // default — we just don't disable them). Sonatype Central Portal hosts
 // the staging repo; the actual upload is driven from RELEASING.md.
+// publishTo is managed by sbt-ci-release (sonatypePublishToBundle); we only
+// keep Maven style explicit. POM metadata above is what Central validates.
 lazy val publishSettings = Seq(
   publishMavenStyle := true,
-  // Where `publish` (not publishLocal / publishM2) sends artifacts. The
-  // Central Portal accepts a signed bundle; see RELEASING.md for both the
-  // plugin-driven and manual-bundle routes.
-  publishTo := {
-    val central = "https://central.sonatype.com"
-    if (isSnapshot.value)
-      Some("central-snapshots".at(s"$central/repository/maven-snapshots/"))
-    else
-      Some("central-releases".at(s"$central/api/v1/publisher/"))
-  },
 )
 
 ThisBuild / scalacOptions ++= Seq(
