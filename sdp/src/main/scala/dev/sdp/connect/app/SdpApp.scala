@@ -30,6 +30,11 @@ import zio.*
   *   - `SDP_STORAGE_ROOT`      pipeline checkpoint/metadata root, an absolute
   *                             URI with a scheme (default `file:///tmp/sdp/<name>`).
   *   - `SDP_PIPELINE_NAME`     overrides [[name]] (the dataflow graph name).
+  *   - `SDP_DEFAULT_CATALOG`   graph default catalog (CreateDataflowGraph field 1).
+  *   - `SDP_DEFAULT_DATABASE`  graph default database (field 2) — the dev/prod
+  *                             switch: unqualified dataset names land here
+  *                             (`dev_eric` locally, the real schema in prod).
+  *                             Unset = omit. `run` only.
   *
   * `validate` and `manifest` are offline and run with NO env vars set.
   */
@@ -53,6 +58,13 @@ trait SdpApp extends ZIOAppDefault:
   private val EndpointVar = "SDP_CONNECT_ENDPOINT"
   private val StorageVar  = "SDP_STORAGE_ROOT"
   private val NameVar     = "SDP_PIPELINE_NAME"
+  // Graph defaults (CreateDataflowGraph fields 1/2) — the dev/prod switch:
+  // code keeps unqualified dataset names, the environment decides where they
+  // land (e.g. SDP_DEFAULT_DATABASE=dev_eric locally, =analytics in prod).
+  // Unset/empty = omit (server falls back to the session). `run` only;
+  // validate/manifest are offline and never read them.
+  private val DefaultCatalogVar  = "SDP_DEFAULT_CATALOG"
+  private val DefaultDatabaseVar = "SDP_DEFAULT_DATABASE"
 
   private val DefaultEndpoint = "sc://localhost:15002"
 
@@ -68,7 +80,9 @@ trait SdpApp extends ZIOAppDefault:
       (host, port) = parseEndpoint(endpoint)
       storageOpt <- env(StorageVar)
       storage = storageOpt.filter(_.nonEmpty).getOrElse(s"file:///tmp/sdp/$nm")
-    yield SdpCommands.RunConfig(host, port, storage)
+      defaultCatalog  <- env(DefaultCatalogVar).map(_.filter(_.nonEmpty))
+      defaultDatabase <- env(DefaultDatabaseVar).map(_.filter(_.nonEmpty))
+    yield SdpCommands.RunConfig(host, port, storage, defaultCatalog, defaultDatabase)
 
   /** Read one environment variable (12factor: config from env). */
   private def env(key: String): UIO[Option[String]] =
@@ -164,6 +178,10 @@ trait SdpApp extends ZIOAppDefault:
            |  $StorageVar       Checkpoint/metadata root, an absolute URI with a
            |                          scheme (default file:///tmp/sdp/<name>).
            |  $NameVar      Override the pipeline / dataflow graph name.
+           |  $DefaultCatalogVar     Graph default catalog (run only; unset = omit).
+           |  $DefaultDatabaseVar    Graph default database — the dev/prod switch:
+           |                          unqualified dataset names land here
+           |                          (dev_eric locally, the real schema in prod).
            |
            |validate and manifest are offline and need no environment.""".stripMargin
       )

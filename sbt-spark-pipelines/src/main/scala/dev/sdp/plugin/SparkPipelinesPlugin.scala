@@ -46,6 +46,15 @@ object SparkPipelinesPlugin extends AutoPlugin {
     val sdpStorageRoot = settingKey[String](
       "Pipeline checkpoint/metadata root — absolute URI with scheme (file://, s3a://, ...)."
     )
+    val sdpDefaultCatalog = settingKey[String](
+      "Graph default catalog sent in CreateDataflowGraph (proto field 1). \"\" (default) = omit. " +
+        "The official Python client always sends these; omission can mis-qualify reads on named " +
+        "V2 catalogs (dependency edges silently vanish)."
+    )
+    val sdpDefaultDatabase = settingKey[String](
+      "Graph default database (proto field 2) — the dev/prod switch: unqualified dataset names " +
+        "land here (dev_eric locally, the real schema in prod). \"\" (default) = omit."
+    )
     val sdpPushDryRun = settingKey[Boolean](
       "When true (default), sdpPush only validates server-side; no flows execute. (The dedicated " +
         "`sdpDryRun` task always runs dry regardless of this setting; `sdpRun` always runs for real.)"
@@ -176,6 +185,8 @@ object SparkPipelinesPlugin extends AutoPlugin {
         manifestRef = sdpManifest.value,
         dry = sdpPushDryRun.value,
         timeoutSeconds = sdpRunTimeout.value,
+        defaultCatalog = sdpDefaultCatalog.value,
+        defaultDatabase = sdpDefaultDatabase.value,
       )
     },
 
@@ -193,6 +204,8 @@ object SparkPipelinesPlugin extends AutoPlugin {
         manifestRef = sdpManifest.value,
         dry = false,
         timeoutSeconds = sdpRunTimeout.value,
+        defaultCatalog = sdpDefaultCatalog.value,
+        defaultDatabase = sdpDefaultDatabase.value,
       )
     },
 
@@ -221,6 +234,8 @@ object SparkPipelinesPlugin extends AutoPlugin {
         manifestRef = sdpManifest.value,
         dry = true,
         timeoutSeconds = sdpRunTimeout.value,
+        defaultCatalog = sdpDefaultCatalog.value,
+        defaultDatabase = sdpDefaultDatabase.value,
       )
     },
 
@@ -232,11 +247,15 @@ object SparkPipelinesPlugin extends AutoPlugin {
         storage = sdpStorageRoot.value,
         manifestRef = sdpManifest.value,
         intervalSeconds = sdpWatchInterval.value,
+        defaultCatalog = sdpDefaultCatalog.value,
+        defaultDatabase = sdpDefaultDatabase.value,
       )
     },
 
     sdpStorageRoot   := s"file:///tmp/sdp/${name.value}",
     sdpPushDryRun    := true,
+    sdpDefaultCatalog  := "",
+    sdpDefaultDatabase := "",
     sdpRunTimeout    := 600,
     sdpWatchInterval := 30,
 
@@ -434,6 +453,8 @@ object SparkPipelinesPlugin extends AutoPlugin {
       manifestRef: HashedVirtualFileRef,
       dry: Boolean,
       timeoutSeconds: Int,
+      defaultCatalog: String = "",
+      defaultDatabase: String = "",
   ): Unit =
     val manifestPath = conv.toPath(manifestRef)
     val manifestText = new String(Files.readAllBytes(manifestPath), UTF_8)
@@ -452,7 +473,17 @@ object SparkPipelinesPlugin extends AutoPlugin {
     // the cancel unblocks the parked gRPC pull so the loser interrupts cleanly
     // (a plain `.timeout` would deadlock waiting on the parked `next()`).
     val effect = zio.ZIO.scoped {
-      PipelinesRegistration.register(host, port, manifest, storage, dry).flatMap { handle =>
+      PipelinesRegistration
+        .register(
+          host,
+          port,
+          manifest,
+          storage,
+          dry,
+          defaultCatalog = Some(defaultCatalog).filter(_.nonEmpty),
+          defaultDatabase = Some(defaultDatabase).filter(_.nonEmpty),
+        )
+        .flatMap { handle =>
         val drain = handle.progress
           .tap(p => zio.ZIO.succeed(log.info(s"sdp:   • ${p.raw}")))
           .runDrain
@@ -488,6 +519,8 @@ object SparkPipelinesPlugin extends AutoPlugin {
       storage: String,
       manifestRef: HashedVirtualFileRef,
       intervalSeconds: Int,
+      defaultCatalog: String = "",
+      defaultDatabase: String = "",
   ): Unit =
     val manifestPath = conv.toPath(manifestRef)
     val manifestText = new String(Files.readAllBytes(manifestPath), UTF_8)
@@ -502,7 +535,17 @@ object SparkPipelinesPlugin extends AutoPlugin {
     )
 
     val cycle = zio.ZIO.scoped {
-      PipelinesRegistration.register(host, port, manifest, storage, dry = false).flatMap { handle =>
+      PipelinesRegistration
+        .register(
+          host,
+          port,
+          manifest,
+          storage,
+          dry = false,
+          defaultCatalog = Some(defaultCatalog).filter(_.nonEmpty),
+          defaultDatabase = Some(defaultDatabase).filter(_.nonEmpty),
+        )
+        .flatMap { handle =>
         handle.progress
           .tap(p => zio.ZIO.succeed(log.info(s"sdp:   • ${p.raw}")))
           .runDrain

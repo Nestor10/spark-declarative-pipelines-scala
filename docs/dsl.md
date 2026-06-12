@@ -399,7 +399,9 @@ object Warehouse extends SdpApp:
 `SdpApp` (from `dev.sdp.connect.app`) makes that same object a **standalone runner**:
 the uber jar IS the production entry point — `java -jar app.jar validate`,
 `manifest [--out p]`, or `run [--dry]`, with config read from the environment
-(`SDP_CONNECT_ENDPOINT`, `SDP_STORAGE_ROOT`, `SDP_PIPELINE_NAME`). Argo/K8s
+(`SDP_CONNECT_ENDPOINT`, `SDP_STORAGE_ROOT`, `SDP_PIPELINE_NAME`, and the
+dev/prod switch `SDP_DEFAULT_CATALOG`/`SDP_DEFAULT_DATABASE` — run-only,
+unset = omit). Argo/K8s
 schedules the jar with no sbt on the path. The sbt plugin
 ([plugin.md](plugin.md)) drives the *same* `pipeline` value for the dev loop via
 `sdpPipelineClass := "com.example.Warehouse"`.

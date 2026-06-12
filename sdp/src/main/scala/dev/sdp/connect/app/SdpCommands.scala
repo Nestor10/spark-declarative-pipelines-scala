@@ -19,7 +19,14 @@ import zio.*
 object SdpCommands:
 
   /** Effective configuration for a run, resolved from the environment. */
-  final case class RunConfig(host: String, port: Int, storage: String)
+  final case class RunConfig(
+      host: String,
+      port: Int,
+      storage: String,
+      // Graph defaults — the dev/prod environment switch (see SdpApp env vars).
+      defaultCatalog: Option[String] = None,
+      defaultDatabase: Option[String] = None,
+  )
 
   /** Expected, renderable failures of a subcommand. */
   enum CommandError:
@@ -67,7 +74,15 @@ object SdpCommands:
       graphId <- ZIO
         .scoped {
           PipelinesRegistration
-            .register(config.host, config.port, manifest, config.storage, dry)
+            .register(
+              config.host,
+              config.port,
+              manifest,
+              config.storage,
+              dry,
+              defaultCatalog = config.defaultCatalog,
+              defaultDatabase = config.defaultDatabase,
+            )
             .flatMap { handle =>
               handle.progress
                 .tap(p => Console.printLine(s"sdp:   • ${p.raw}").orDie)

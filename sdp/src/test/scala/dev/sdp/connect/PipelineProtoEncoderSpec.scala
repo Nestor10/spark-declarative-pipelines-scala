@@ -200,4 +200,21 @@ object PipelineProtoEncoderSpec extends ZIOSpecDefault:
         run.getStartRun.getStorage == "file:///tmp/sdp",
       )
     },
+
+    test("createDataflowGraph sets default_catalog/database only when Some (proto fields 1/2)") {
+      val none        = reparse(PipelineProtoEncoder.createDataflowGraph()).getCreateDataflowGraph
+      val catalogOnly = reparse(PipelineProtoEncoder.createDataflowGraph(defaultCatalog = Some("warehouse"))).getCreateDataflowGraph
+      val both        = reparse(PipelineProtoEncoder.createDataflowGraph(Some("warehouse"), Some("dev_eric"))).getCreateDataflowGraph
+      assertTrue(
+        // omission is load-bearing: absent fields put the server on its session
+        // fallback (legacy behavior); present fields are the conforming path
+        !none.hasDefaultCatalog,
+        !none.hasDefaultDatabase,
+        catalogOnly.hasDefaultCatalog,
+        !catalogOnly.hasDefaultDatabase,
+        both.hasDefaultCatalog,
+        both.hasDefaultDatabase,
+        both.getDefaultDatabase == "dev_eric",
+      )
+    },
   )

@@ -7,3 +7,4 @@
 // verified on repo1). Brings sbt-dynver (version from git tag), sbt-pgp
 // (signing), sbt-sonatype (bundle upload). Driven by .github/workflows/release.yml.
 addSbtPlugin("com.github.sbt" % "sbt-ci-release" % "1.11.2")
+

@@ -49,6 +49,8 @@ write the pipeline object.
 | `sdpSeedStatements` | setting | SQL statements `sdpSeed` executes (e.g. `CREATE OR REPLACE TABLE bronze.orders USING delta AS SELECT …`). Default empty |
 | `sdpConnectEndpoint` | setting | gRPC endpoint, `sc://host:port` (default `sc://localhost:15002`) |
 | `sdpStorageRoot` | setting | Checkpoint/metadata root — absolute URI with scheme (default `file:///tmp/sdp/<project>`) |
+| `sdpDefaultCatalog` | setting | Graph default catalog sent in `CreateDataflowGraph` (`""` = omit). Send it on named V2 catalogs — omission can silently drop dependency edges |
+| `sdpDefaultDatabase` | setting | Graph default database — the dev/prod switch (see "Environments" below; `""` = omit) |
 | `sdpPushDryRun` | setting | `true` (default): `sdpPush` validates only, no flows execute; `false`: `sdpPush` really runs. (`sdpDryRun` always runs dry; `sdpRun` always runs for real.) |
 | `sdpImportSchemas` | task | Generate named-tuple schema aliases (for `cols[S]`) from the pipeline's inferred shapes + remote catalog tables |
 | `sdpSchemasFile` | setting | Output for generated aliases (default `src/main/scala/sdp/schemas/PipelineSchemas.scala` — checked in, diffs reviewable) |
@@ -200,3 +202,29 @@ container*, not the plugin):
 `<target>/sdp/pipeline.sdpm`, format `sdp-manifest/2` — canonical and
 byte-stable (sorted entries, percent-encoded fields, no timestamps). See
 [the DSL doc](dsl.md#the-manifest) for the format itself.
+
+
+## Environments: dev and prod targets
+
+The dbt/DLT pattern translates directly: **code keeps unqualified dataset
+names; the environment decides where they land.**
+
+```scala
+// build.sbt (local dev) — every managed table lands in dev_eric:
+sdpDefaultCatalog  := "warehouse"
+sdpDefaultDatabase := "dev_eric"
+```
+
+```bash
+# prod (the SdpApp runner env — an Argo pod, a CI job):
+SDP_DEFAULT_CATALOG=warehouse SDP_DEFAULT_DATABASE=analytics java -jar pipeline.jar run
+```
+
+Shared upstream *sources* (`externalTable("bronze.orders")`) stay qualified in
+code, so every environment reads the same inputs — the dbt source/model split.
+
+**The Nessie variant (recommended on the demo stack):** instead of renaming
+schemas, pin a catalog to a branch (`spark.sql.catalog.warehouse_dev.ref =
+dev-eric`) and point `sdpDefaultCatalog` at it — identical table names, an
+isolated timeline, and an atomic `MERGE BRANCH dev-eric INTO main` promotes
+every table the pipeline touched at once: the data pull-request.

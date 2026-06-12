@@ -71,13 +71,27 @@ object PipelinesRegistration:
       storage: String = "file:///tmp/sdp-dry-run",
       dry: Boolean = true,
       sqlConf: Map[String, String] = Map.empty,
+      // Graph defaults (CreateDataflowGraph fields 1/2). The official Python
+      // client ALWAYS sends them; omitting routes the server onto a session
+      // fallback that mis-qualifies reads on named V2 catalogs — dependency
+      // edges silently vanish and dependent flows race. None = omit (legacy).
+      defaultCatalog: Option[String] = None,
+      defaultDatabase: Option[String] = None,
   ): ZIO[Scope, RegistrationError, RunHandle] =
     channel(host, port).flatMap { ch =>
       val stub      = sc.SparkConnectServiceGrpc.newBlockingStub(ch)
       val sessionId = UUID.randomUUID().toString
 
       for
-        created <- execute(stub, sessionId, PipelineProtoEncoder.createDataflowGraph(sqlConf = sqlConf))
+        created <- execute(
+                     stub,
+                     sessionId,
+                     PipelineProtoEncoder.createDataflowGraph(
+                       defaultCatalog = defaultCatalog,
+                       defaultDatabase = defaultDatabase,
+                       sqlConf = sqlConf,
+                     ),
+                   )
         graphId <- ZIO
           .fromOption(created.collectFirst {
             case r if r.hasPipelineCommandResult && r.getPipelineCommandResult.hasCreateDataflowGraphResult =>
