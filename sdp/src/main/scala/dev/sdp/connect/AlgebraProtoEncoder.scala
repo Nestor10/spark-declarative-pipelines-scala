@@ -28,9 +28,12 @@ object AlgebraProtoEncoder:
   private final class Ctx:
     private var nextId: Long = 0
     private val refs         = scala.collection.mutable.ListBuffer.empty[sc.Relation]
-    def register(reference: sc.Relation): Long =
+    def freshId: Long =
       val id = nextId
       nextId += 1
+      id
+    def register(reference: sc.Relation): Long =
+      val id = freshId
       refs += reference.toBuilder
         .setCommon(reference.getCommon.toBuilder.setPlanId(id))
         .build()
@@ -49,7 +52,18 @@ object AlgebraProtoEncoder:
       ctx.references.foreach(w.addReferences)
       sc.Relation.newBuilder().setWithRelations(w).build()
 
+  /** Every relation node gets a `common.plan_id` — like every DataFrame-built
+    * client plan. The field looks optional but is load-bearing server-side:
+    * SDP's FlowAnalysis propagates PLAN_ID_TAG through resolution, and plans
+    * WITHOUT ids have been observed to lose dependency-edge classification in
+    * GraphIdentifierManager (flows then race their upstreams). Conformance:
+    * the reference Python client stamps ids on every node; so do we.
+    */
   private def go(rel: Rel)(using ctx: Ctx): sc.Relation =
+    val built = build(rel)
+    built.toBuilder.setCommon(built.getCommon.toBuilder.setPlanId(ctx.freshId)).build()
+
+  private def build(rel: Rel)(using ctx: Ctx): sc.Relation =
     rel match
       case Rel.NamedTable(name, streaming) =>
         sc.Relation
