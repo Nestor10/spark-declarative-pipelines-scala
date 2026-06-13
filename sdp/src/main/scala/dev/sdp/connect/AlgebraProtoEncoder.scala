@@ -25,8 +25,8 @@ object AlgebraProtoEncoder:
     * references; a non-empty collection wraps the root in `WithRelations`
     * (the wire's representation of relations-in-expressions).
     */
-  private final class Ctx:
-    private var nextId: Long = 0
+  private final class Ctx(base: Long):
+    private var nextId: Long = base
     private val refs         = scala.collection.mutable.ListBuffer.empty[sc.Relation]
     def freshId: Long =
       val id = nextId
@@ -43,8 +43,16 @@ object AlgebraProtoEncoder:
   /** Encode a relation tree. Subqueries inside expressions lower to
     * `SubqueryExpression(plan_id)` + `WithRelations` references.
     */
-  def relation(rel: Rel): sc.Relation =
-    given ctx: Ctx = new Ctx
+  /** @param planIdBase starting plan_id. Plan ids must be UNIQUE ACROSS ALL
+    *   FLOWS in one registration: the server fuses every flow's plan into one
+    *   analyzer context during graph resolution, and colliding PLAN_ID_TAGs
+    *   break dependency classification (observed: 3-flow graphs raced where
+    *   2-flow graphs survived; the reference Python client uses a
+    *   session-global counter). Callers registering multiple flows must pass
+    *   disjoint bases; direct/test callers may use the 0 default.
+    */
+  def relation(rel: Rel, planIdBase: Long = 0L): sc.Relation =
+    given ctx: Ctx = new Ctx(planIdBase)
     val root = go(rel)
     if ctx.references.isEmpty then root
     else

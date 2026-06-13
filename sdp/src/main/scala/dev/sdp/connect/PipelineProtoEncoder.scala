@@ -66,10 +66,19 @@ object PipelineProtoEncoder:
     val outputs = manifest.nodes.flatMap(defineOutput(graphId, _))
 
     val authoredTargets = manifest.flows.map(_.target).toSet
-    val authored = manifest.flows.map { flow =>
+    // Disjoint plan-id ranges per flow (10k apart — far above any real plan's
+    // node count): ids must not collide across flows in one graph, see
+    // AlgebraProtoEncoder.relation.
+    val authored = manifest.flows.zipWithIndex.map { (flow, i) =>
       flow.details match
         case FlowDetails.WriteRelation(rel) =>
-          flowCommand(graphId, flow.name, flow.target, AlgebraProtoEncoder.relation(rel), flow.once)
+          flowCommand(
+            graphId,
+            flow.name,
+            flow.target,
+            AlgebraProtoEncoder.relation(rel, planIdBase = i.toLong * 10000L),
+            flow.once,
+          )
         case _: FlowDetails.AutoCdc =>
           autoCdcFlowCommand(graphId, flow)
     }
