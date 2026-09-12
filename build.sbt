@@ -75,22 +75,20 @@ lazy val publishSettings = Seq(
   publishMavenStyle := true,
 )
 
-// Sonatype Central's server-side processing is the release bottleneck and it is
-// NOT ours: measured 2026-09-12, the whole sbt side (compile+sign+bundle+upload)
-// takes ~47 s, then the plugin polls Central until PUBLISHED — 49 min (v0.2.0)
-// and 57.5 min (v0.2.1), the latter 2.5 min under sbt-sonatype's default 60-min
-// timeout, whose expiry marks the run RED while Sonatype publishes anyway (and
-// re-running the job on that false failure would double-deploy). Nothing
-// client-side makes the artifact appear sooner, so: wait generously, never
-// serialize work on the green check — consumers should poll repo1 for the
-// version instead (that is exactly what the example-refresh flow does).
-ThisBuild / sonatypeTimeoutMillis := 3 * 60 * 60 * 1000 // 3h, was 60min default
-
-// Explicit over inherited: sbt-ci-release 1.11.x already defaults to the
-// Sonatype Central Portal (proven — both 0.2.x deployments landed there),
-// but pin it so a future plugin-default change can't silently reroute us.
-// The legacy hosts (oss.sonatype.org / s01) are retired.
-ThisBuild / sonatypeCredentialHost := xerial.sbt.Sonatype.sonatypeCentralHost
+// RELEASE LATENCY — measured 2026-09-12, so nobody re-litigates it: the sbt side
+// (compile+sign+bundle+upload) takes ~47 s; the other 49 min (v0.2.0) / 57.5 min
+// (v0.2.1) is Sonatype Central's server-side VALIDATING→PUBLISHING queue. On
+// sbt 2 the publisher is SBT-NATIVE (`sbt.internal.sona.Sona`, driven by
+// sbt-ci-release; the xerial sbt-sonatype plugin is deprecated and NOT on this
+// classpath — its keys like sonatypeTimeoutMillis/sonatypeCredentialHost do not
+// exist here and broke the build when tried). Facts of the native client, from
+// the v2.0.8 source: `sonaRelease` waits UNCONDITIONALLY for PUBLISHED (poll
+// 5,5,10,15 then 30 s — hardcoded, UNCAPPED, so a slow queue can never
+// false-fail the run); `sonaUpload` would stop at VALIDATED but then needs a
+// manual portal click. There is nothing to configure and nothing client-side
+// shortens the queue. Posture: never serialize work on the green check —
+// consumers poll repo1 for the version (the example-refresh flow does exactly
+// that).
 
 ThisBuild / scalacOptions ++= Seq(
   "-deprecation",
