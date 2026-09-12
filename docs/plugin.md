@@ -81,9 +81,12 @@ uses — and logs the answer:
 ```
 
 Then, **before** `CreateDataflowGraph`, it checks the pipeline's constructs
-against that version. Today there is exactly one requirement: an **AUTO CDC**
-flow needs a **Spark 4.2+** server. A too-old server is refused with a sentence,
-and nothing is registered:
+against that version. Today there are two requirements, both AUTO CDC: an
+**SCD type 1** flow needs a **Spark 4.2+** server, and an **SCD type 2** flow a
+**Spark 4.3+** one (SCD2 is upstream-master only — see the SCD2 section of
+`docs/dsl.md`, which also covers the separate, earlier refusal that applies until
+the *client's* pinned proto carries those fields). A too-old server is refused
+with a sentence, and nothing is registered:
 
 ```
 sdp: registration failed — Spark Connect server is too old for this pipeline:

@@ -260,7 +260,11 @@ cache (and the metabuild's cached plugin closure) can otherwise serve stale resu
   the plugin injects its own version of `sdp` by default, so a mixed pair is a config mistake,
   not a supported combination.
 - The manifest format (`sdp-manifest/2`, `/3` for AUTO CDC + `once`) is a frozen contract:
-  breaking changes bump the version and keep the parser multilingual.
+  breaking changes bump the version and keep the parser multilingual. SCD2 (roadmap S2) is
+  the worked example of *not* bumping: its two track-history groups are optional and trailing
+  in the AUTO CDC token stream and are emitted only when non-empty, so every manifest that
+  predates them renders byte-identically and `/3` stayed `/3`. Prefer that shape — a new
+  construct earns a version bump only when it changes bytes someone already wrote.
 
 ## Iterating against a separate consumer (e.g. `../sdp-example`)
 

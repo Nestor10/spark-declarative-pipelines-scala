@@ -46,7 +46,7 @@ object BehaviorInventory:
     case FullRefresh    extends Area("full refresh / reset semantics")
     case OnceFlows      extends Area("once (backfill) flow semantics")
     case ExternalInputs extends Area("external input resolution")
-    case AutoCdc        extends Area("AUTO CDC (SCD1) registration + execution")
+    case AutoCdc        extends Area("AUTO CDC registration + execution (SCD1 measured; SCD2 master-only)")
     case Streaming      extends Area("streaming trigger + run termination")
     case Events         extends Area("event / progress message shapes")
     case DryRun         extends Area("dry run (StartRun dry=true)")
@@ -336,7 +336,7 @@ object BehaviorInventory:
     Behavior(
       "CDC-3-target-schema",
       Area.AutoCdc,
-      "the AUTO CDC target is materialized with the column-selected source schema PLUS a reserved `__spark_autocdc_metadata` struct (deleteSequence/upsertSequence, typed by the sequencing column) — the selection lists are applied to the target's schema, not just to the merge",
+      "the AUTO CDC target is materialized with the column-selected source schema PLUS a reserved `__spark_autocdc_metadata` struct (deleteSequence/upsertSequence, typed by the sequencing column) — the selection lists are applied to the target's schema, not just to the merge. SCD2 widens this (see CDC-10): two more reserved columns and a different metadata struct",
       "sql/pipelines/.../autocdc/Scd1BatchProcessor.scala → Scd1BatchProcessor.cdcMetadataColSchema; sql/pipelines/.../autocdc/AutoCdcReservedNames.scala",
       Coverage.Covered(AutoCdcIT, "runs a flow with exceptColumnList = [op] and reads the materialized target's schema back through AnalyzePlan: id/name/seq + __spark_autocdc_metadata, `op` absent — the only server-observable proof that field 9 crossed the wire"),
       List("__spark_autocdc_metadata"),
@@ -359,7 +359,7 @@ object BehaviorInventory:
     Behavior(
       "CDC-5-scd1-merge-semantics",
       Area.AutoCdc,
-      "per microbatch: deduplicate to the latest event per key by sequence, project the CDC metadata, apply column selection, drop events superseded by tombstones, then MERGE onto the auxiliary table and the target (upsert wins on >=, delete wins on >)",
+      "per microbatch: deduplicate to the latest event per key by sequence, project the CDC metadata, apply column selection, drop events superseded by tombstones, then MERGE onto the auxiliary table and the target (upsert wins on >=, delete wins on >). This row is SCD1's rule specifically — SCD2 replaces latest-wins with interval maintenance (CDC-10), so nothing measured here transfers",
       "sql/pipelines/.../autocdc/Scd1BatchProcessor.scala → Scd1BatchProcessor.reconcileMicrobatch / mergeMicrobatchOntoTarget",
       Coverage.Covered(
         IcebergCdcIT,
@@ -398,6 +398,44 @@ object BehaviorInventory:
       "sql/pipelines/.../graph/GraphValidations.scala → GraphValidations.validateMultiQueryTables",
       Coverage.Uncovered("our offline validator does not know this rule yet, so the verdict would come from the server; nothing exercises it"),
       List("AUTOCDC_MULTIPLE_FLOWS_TO_TARGET"),
+    ),
+
+    // SCD2 (roadmap S2). These two rows are anchored to MASTER, not v4.2.0 —
+    // deliberately, and they are the only AUTO CDC rows that are: SCD_TYPE_2 and
+    // the track-history lists landed after the 4.2 cut (SPARK-58247, 2026-07-22;
+    // `git tag --contains` names no release), so there is no released server to
+    // measure against and no honest way to call them anything but Uncovered.
+    // Our side is complete and tested offline — the DSL authors them, the
+    // validator mirrors both server refusals, the manifest renders them — and
+    // the encoder refuses to put them on the wire by DESCRIPTOR lookup
+    // (Scd2Wire), so these rows become measurable on the same day the pin can
+    // encode them, with no client change.
+    Behavior(
+      "CDC-9-scd2-registration",
+      Area.AutoCdc,
+      "stored_as_scd_type = SCD_TYPE_2 (10) selects the SCD2 processor, and the track_history_column_list (11) / track_history_except_column_list (12) pair becomes a ColumnSelection exactly like column_list/except_column_list: at most one side non-empty, empty meaning 'track every eligible column'. The server refuses both-lists and refuses a track-history list under any non-SCD2 type",
+      "sql/connect/server/.../connect/pipelines/PipelinesHandler.scala → PipelinesHandler.buildAutoCdcFlow (trackHistorySelection)",
+      Coverage.Uncovered(
+        "master-only: no released server carries SCD_TYPE_2, and the pinned spark-connect-common 4.2.0 proto " +
+          "has neither the enum value nor fields 11/12 (the committed inventory is the receipt). Our half is " +
+          "asserted offline — PipelineProtoEncoderSpec proves the encoder REFUSES the construct by descriptor " +
+          "rather than half-encoding it (SCD_TYPE_UNSPECIFIED would read as SCD1 server-side), " +
+          "ManifestAssemblySpec mirrors both server refusals as validation errors, and VersionGateSpec pins " +
+          "SCD2 to a 4.3+ server. Nothing measures the SERVER, and nothing can until a release ships it"
+      ),
+      List("SCD_TYPE_2", "AUTOCDC_TRACK_HISTORY_REQUIRES_SCD2", "AUTOCDC_BOTH_TRACK_HISTORY_COLUMN_LIST_AND_EXCEPT_COLUMN_LIST"),
+    ),
+    Behavior(
+      "CDC-10-scd2-history-intervals",
+      Area.AutoCdc,
+      "an SCD2 target keeps history as validity intervals: the materialized schema gains reserved `__START_AT` / `__END_AT` columns (typed by the sequencing column) beside the metadata struct, an upsert that changes a TRACKED column closes the current row and opens a new one, consecutive events agreeing on every tracked column coalesce, and a tombstone closes the interval instead of deleting the row",
+      "sql/pipelines/.../autocdc/Scd2BatchProcessor.scala → Scd2BatchProcessor.startAtColName / endAtColName / reconcileMicrobatch",
+      Coverage.Uncovered(
+        "master-only (see CDC-9): the engine-side Scd2BatchProcessor/Scd2VersionMap exist only at HEAD, so the " +
+          "semantics are read from the source, never run. Note the compounding prerequisite — even once a " +
+          "release ships SCD2, measuring it needs a MERGE-capable target (CDC-4), i.e. Iceberg"
+      ),
+      List("__START_AT", "__END_AT"),
     ),
 
     // ---------------------------------------------------------- external inputs

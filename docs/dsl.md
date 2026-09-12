@@ -147,7 +147,8 @@ Surface (mirrors the official Python `create_auto_cdc_flow`):
 `createAutoCdcFlow(target, source, keys, sequenceBy, applyAsDeletes?,
 applyAsTruncates?, columnList?, exceptColumnList?,
 ignoreNullUpdatesColumnList?, ignoreNullUpdatesExceptColumnList?,
-storedAsScdType = 1, name = Some(s"${target}_auto_cdc"), once = false)`.
+storedAsScdType = 1, trackHistoryColumnList?, trackHistoryExceptColumnList?,
+name = Some(s"${target}_auto_cdc"), once = false)`.
 A `Seq[String]`/`String` overload of `keys`/`sequenceBy` lowers to `col(...)`.
 
 **Semantics.** The flow MERGEs the source into the target; the `source`
@@ -207,6 +208,59 @@ source columns plus a reserved `__spark_autocdc_metadata` struct.
 The manifest header bumps to `sdp-manifest/3` when a pipeline contains an AUTO
 CDC flow (or a `once` flow, below); pipelines without these constructs still
 write `sdp-manifest/2`, byte-identical to before.
+
+#### SCD type 2 — authored and validated today, runnable when a release ships it
+
+`storedAsScdType = 2` keeps **history**: instead of overwriting a row in place,
+the target records validity intervals, and a change to a tracked column closes
+the current record and opens a new one. Two optional lists choose what counts as
+a change — mutually exclusive, and both meaningless outside SCD2:
+
+```scala
+val applyCdc = createAutoCdcFlow(
+  target          = "dim_customers",
+  source          = "bronze.customer_cdc",
+  keys            = Seq(col("id")),
+  sequenceBy      = col("event_ts"),
+  storedAsScdType = 2,
+  // either: only these columns open a new history record …
+  trackHistoryColumnList       = Seq(col("tier"), col("address")),
+  // … or: everything except these does (never both)
+  // trackHistoryExceptColumnList = Seq(col("audit_ts")),
+)
+```
+
+Omitting both lists tracks every selected column. Both take `Column`s, so the
+string form is `col("tier")`; `storedAsScdType` accepts only `1` or `2` and
+refuses anything else at the call site.
+
+**What works today, and what does not.** Everything up to the wire:
+`sdpValidate` / `sdpManifest` are fully green offline for an SCD2 pipeline, the
+manifest still renders under `sdp-manifest/3` (SCD2 needed no new format), and
+the two rules the server enforces are caught in the build instead — declaring
+both track-history lists, or declaring either one on an SCD1 flow. What does not
+work is running it: **no released Spark carries SCD2 on the wire**. `SCD_TYPE_2`
+and the `track_history_*` fields are upstream-master only (SPARK-58247) and are
+absent from the published 4.2.0 proto, so `sdpRun` / `sdpDryRun` / `SdpApp run`
+refuse an SCD2 pipeline with a sentence rather than sending a message the server
+would read as SCD *1*:
+
+> AUTO CDC flow 'dim_customers_auto_cdc' (target 'dim_customers') is stored as
+> SCD type 2, which the pinned Spark Connect proto cannot express: …
+> spark-connect-common 4.3.0 or newer …
+
+That refusal is decided by **looking at the proto descriptor**, not at a version
+number, so it disappears on its own the moment this library is built against a
+Spark release carrying the fields — no code change, no new release of your
+pipeline. A server that is *older* than the construct is a separate check (the
+[version handshake](plugin.md#server-version-handshake) requires Spark 4.3+ for
+SCD2, one minor above SCD1's 4.2).
+
+**You will hear about that release.** `scripts/upstream-watch.sh` (the C2
+currency check) already diffs upstream's `pipelines.proto` and reports
+`SCD_TYPE_2` as intel about the next release — it is how SCD2 was spotted in the
+first place — so the day it lands in a released artifact, the watch says so and
+bumping `sdp.connect.common.version` is the whole change.
 
 ### One-time / backfill flows (`once`)
 
