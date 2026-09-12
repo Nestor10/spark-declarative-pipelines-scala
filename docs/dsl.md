@@ -178,11 +178,22 @@ row-level `MERGE`, so the target table's connector must implement
 > table `spark_catalog`.`default`.`dim_customers` (format: parquet) does not
 > support row-level operations.
 
-As of Spark 4.2.0 (measured 2026-09-12) this rules out the usual open stack:
-parquet is a V1 file source, Delta 4.4.0's `DeltaTableV2` implements
-`SupportsWrite`/`V2TableWithV1Fallback` but not the row-level contract, and
-Iceberg — which does implement it — has no Spark 4.2 build yet. Declare AUTO CDC
-pipelines today, and run them where a MERGE-capable catalog exists.
+As of Spark 4.2.0 (measured 2026-09-12) this rules out the **stock** formats:
+parquet is a V1 file source, and Delta 4.4.0's `DeltaTableV2` implements
+`SupportsWrite`/`V2TableWithV1Fallback` but not the row-level contract — both
+are refused with the error above.
+
+**Iceberg is the exception**, and it works today: `SparkTable` implements
+`SupportsRowLevelOperations`, and Iceberg's Spark-4.2 runtime accepts the target
+and materializes the merge — measured end to end on 2026-09-12 against
+`iceberg-spark-runtime-4.2_2.13:1.12.0-SNAPSHOT` (an Apache snapshot build;
+**1.12.0 is not released yet**, so this is a preview of the supported stack, not
+a recommendation to ship on). Nothing in the client changes for it: point the
+server's catalog at Iceberg (`spark.sql.sources.default=iceberg` and an Iceberg
+catalog) and the same pipeline runs — the DSL never sends a format.
+
+So: declare AUTO CDC pipelines today, and run them where a MERGE-capable catalog
+exists.
 
 Three more 4.2.0 server-side facts, read from
 `PipelinesHandler.buildAutoCdcFlow`: `applyAsTruncates` and the two

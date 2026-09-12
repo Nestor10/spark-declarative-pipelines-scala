@@ -58,6 +58,7 @@ SDP_INTEGRATION=1 sbt 'sdpIt/Test/runMain dev.sdp.connect.AlgebraOracleSpec'
 SDP_INTEGRATION=1 sbt 'sdpIt/Test/runMain dev.sdp.connect.PipelinesRegistrationIntegrationSpec'
 SDP_INTEGRATION=1 sbt 'sdpIt/Test/runMain dev.sdp.connect.FunctionLibrarySpec'
 SDP_INTEGRATION=1 sbt 'sdpIt/Test/runMain dev.sdp.connect.AutoCdcE2eSpec'    # 4.2.0 image
+SDP_INTEGRATION=1 sbt 'sdpIt/Test/runMain dev.sdp.connect.IcebergAutoCdcE2eSpec'  # 4.2.0 + Iceberg
 ```
 
 Each suite starts (and always tears down) a Spark container via the `podman`/`docker` CLI —
@@ -77,10 +78,40 @@ the server's `AnalyzePlan` before being claimed in `SupportedCapabilities`.
 `AutoCdcE2eSpec` (~50 s after the pull) registers a real AUTO CDC SCD1 pipeline against 4.2.0:
 handshake, dry-run validation, the materialized target's schema, the server's identifier-only
 rule for keys, and the `once` refusal. It deliberately asserts a **ceiling** rather than merge
-results: AUTO CDC writes through DSv2 `MERGE`, and no Spark 4.2 table format implements
-`SupportsRowLevelOperations` yet — parquet and Delta 4.4.0 are both refused with
-`AUTOCDC_TARGET_DOES_NOT_SUPPORT_MERGE`, and Iceberg has no 4.2 build. See behavioral rows
-CDC-4/CDC-5.
+results: AUTO CDC writes through DSv2 `MERGE`, and no *stock* Spark 4.2 table format
+implements `SupportsRowLevelOperations` — parquet and Delta 4.4.0 are both refused with
+`AUTOCDC_TARGET_DOES_NOT_SUPPORT_MERGE`. See behavioral row CDC-4.
+
+### The Iceberg-flavored server — `IcebergAutoCdcE2eSpec` (rows CDC-5 / CDC-6)
+
+The other side of that ceiling. Iceberg's `SparkTable` *does* implement
+`SupportsRowLevelOperations`, so against an Iceberg-flavored server the same client, the same
+flow and the same manifest get past the capability gate and the merge actually lands — which
+is what makes the merge semantics (CDC-5) and the checkpointed re-run (CDC-6) assertable at
+all. The spec seeds CDC events (including an out-of-order pair and a tombstone), runs, reads
+the target back, appends more events, re-runs, and then reads the flow's **offset log** to
+show that run 2 was micro-batch 1 of the same streaming query rather than a replay.
+
+Two things make that server:
+
+- **A pinned snapshot jar.** Iceberg has published no Spark-4.2 release; Apache's snapshot
+  repository has one. `SparkConnectTestServer.Iceberg42` pins the **timestamped** artifact
+  (`iceberg-spark-runtime-4.2_2.13-1.12.0-20260912.002841-8.jar`) rather than the bare
+  `-SNAPSHOT` coordinate, because a snapshot coordinate serves different bytes tomorrow and
+  this suite's verdict has to stay reproducible. It is downloaded **once** into
+  `~/.cache/sdp-it/` (override with `SDP_IT_CACHE`) — outside the repo, so a 48 MB jar is
+  never source — mounted read-only into the container and passed to
+  `start-connect-server.sh` with `--jars`. It is **server fixture material only**: it must
+  never appear in any `libraryDependencies`. First run needs network; later runs are offline.
+  When Iceberg 1.12.0 ships to Central, swap that one line for the release —
+  `scripts/upstream-watch.sh` watches for exactly that.
+- **Catalog confs, not client changes.** `spark.sql.extensions`, `SparkSessionCatalog`, a
+  hadoop catalog on a container-local warehouse, and `spark.sql.sources.default=iceberg`. The
+  client sends **no format** anywhere (D13); the target is Iceberg because the catalog default
+  says so, which is exactly how a user gets one.
+
+`SparkConnectTestServer.Flavor` is the general shape (image + jars + confs), so the next suite
+that needs a non-stock server does not need new plumbing.
 
 ## The coverage matrix — what we have and don't
 
@@ -161,13 +192,14 @@ in `sdpIt/testFull` (itself ungated — it needs no container, only the classpat
 - behavior verified **by hand** (a live session, a measured experiment) is still `Uncovered`,
   with the receipt in the row's note. Only an automated spec counts.
 
-Most rows are Uncovered today, and that is the honest headline (13 / 49 in scope as of
+Most rows are Uncovered today, and that is the honest headline (15 / 49 in scope as of
 2026-09-12): the container-gated `PipelinesRegistrationIntegrationSpec` covers the
 registration handshake, dry-run validation, the dangling-upstream rejection and
 external-input resolution failure; `AutoCdcE2eSpec` covers AUTO CDC registration, the
 identifier-only rule, the materialized target schema, the MERGE-capability ceiling and the
-`once` refusal; re-run, full-refresh and graph-defaults behavior is known only from hand-run
-sessions. The report is generated, not committed — regenerate it whenever you want the
+`once` refusal; `IcebergAutoCdcE2eSpec` adds the SCD1 merge semantics and the checkpointed
+re-run; re-run, full-refresh and graph-defaults behavior for ordinary tables is known only
+from hand-run sessions. The report is generated, not committed — regenerate it whenever you want the
 current accounting.
 
 ## Upstream watch — is the pin still current?

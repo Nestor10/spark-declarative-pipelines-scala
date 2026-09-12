@@ -93,6 +93,7 @@ object BehaviorInventory:
   private val RunProgressS   = "dev.sdp.core.RunProgressSpec"
   private val VersionGateS   = "dev.sdp.connect.VersionGateSpec"
   private val AutoCdcIT      = "dev.sdp.connect.AutoCdcE2eSpec"
+  private val IcebergCdcIT   = "dev.sdp.connect.IcebergAutoCdcE2eSpec"
 
   private def reg(id: String, what: String, anchor: String, coverage: Coverage, m: List[String] = Nil) =
     Behavior(id, Area.Registration, what, anchor, coverage, m)
@@ -345,7 +346,14 @@ object BehaviorInventory:
       Area.AutoCdc,
       "the flow refuses to start unless the target table's V2 connector implements SupportsRowLevelOperations — checked by loading the table, before any data moves, and retried (then fatal) like any flow failure",
       "sql/pipelines/.../graph/FlowExecution.scala → AutoCdcMergeWriteBase.requireDestinationSupportsRowLevelOps (called from Scd1MergeStreamingWrite's constructor)",
-      Coverage.Covered(AutoCdcIT, "asserts the typed refusal on the stock image's parquet target — the ceiling itself is the assertion"),
+      Coverage.Covered(
+        AutoCdcIT,
+        "asserts the typed refusal on the stock image's parquet target — the ceiling itself is the assertion. " +
+          "Now measured in BOTH directions (2026-09-12): IcebergAutoCdcE2eSpec runs the same flow against a " +
+          "server carrying iceberg-spark-runtime-4.2 1.12.0-SNAPSHOT (build -20260912.002841-8), whose SparkTable " +
+          "does implement SupportsRowLevelOperations, and the flow is ACCEPTED and materializes — so the gate " +
+          "tracks the connector's capability, not the client",
+      ),
       List("AUTOCDC_TARGET_DOES_NOT_SUPPORT_MERGE", "0A000"),
     ),
     Behavior(
@@ -353,14 +361,27 @@ object BehaviorInventory:
       Area.AutoCdc,
       "per microbatch: deduplicate to the latest event per key by sequence, project the CDC metadata, apply column selection, drop events superseded by tombstones, then MERGE onto the auxiliary table and the target (upsert wins on >=, delete wins on >)",
       "sql/pipelines/.../autocdc/Scd1BatchProcessor.scala → Scd1BatchProcessor.reconcileMicrobatch / mergeMicrobatchOntoTarget",
-      Coverage.Uncovered("BLOCKED by CDC-4, measured 2026-09-12: no Spark 4.2 table format implements SupportsRowLevelOperations — parquet (V1) and Delta 4.4.0 are both refused (DeltaTableV2 implements only Table/SupportsWrite/V2TableWithV1Fallback — read off the jar), and Iceberg has no 4.2 build. Revisit when one exists"),
+      Coverage.Covered(
+        IcebergCdcIT,
+        "runs the flow onto an Iceberg target and reads the rows back: an out-of-order pair for one key resolves " +
+          "to the HIGHER sequence (physically-last-wins would have given the other value), a tombstoned key is " +
+          "absent, an untouched key survives, and `op` — dropped by except_column_list — is not in the target. " +
+          "Needs a merge-capable format, hence the Iceberg-flavored server (see CDC-4)",
+      ),
     ),
     Behavior(
       "CDC-6-rerun-from-checkpoint",
       Area.AutoCdc,
       "an AUTO CDC flow is a streaming foreachBatch query, so a re-run resumes from its checkpoint and applies only newly-arrived CDC rows; full refresh drops the auxiliary table and replays",
       "sql/pipelines/.../autocdc/Scd1ForeachBatchHandler.scala → Scd1ForeachBatchHandler.execute; sql/pipelines/.../graph/FlowExecution.scala → AutoCdcAuxiliaryTable.identifier",
-      Coverage.Uncovered("BLOCKED by CDC-4 — the same ceiling; the re-run leg of this suite is written but cannot assert data"),
+      Coverage.Covered(
+        IcebergCdcIT,
+        "two runs over ONE storage root with events appended in between: the target advances (new key, newer " +
+          "sequence) while the key no wave-2 event mentions keeps its run-1 state. Because an SCD1 merge is " +
+          "idempotent, the DATA cannot separate resume from full replay — so the offset log itself is read back: " +
+          "batches 0 and 1 under a single checkpoint directory, i.e. run 2 was micro-batch 1 of the same streaming " +
+          "query. Full refresh (the second half of this row) is still unexercised",
+      ),
     ),
     Behavior(
       "CDC-7-declared-not-honored",
