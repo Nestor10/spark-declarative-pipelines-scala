@@ -33,10 +33,36 @@ object SdpCommands:
     case Invalid(errors: ::[PipelineValidationError])
     case Registration(error: PipelinesRegistration.RegistrationError)
 
+    /** The environment is misconfigured (e.g. a malformed
+      * `SDP_CONNECT_ENDPOINT`). An operator mistake, not a defect — one
+      * readable line plus the usage text, never a fiber dump. */
+    case BadConfig(detail: String)
+
     /** Multi-line, human-readable rendering for the console. */
     def render: String = this match
-      case Invalid(errors)      => ValidationRendering.invalidGraphMessage(errors.toList)
-      case Registration(error)  => s"sdp: registration failed — ${error.describe}"
+      case Invalid(errors)     => ValidationRendering.invalidGraphMessage(errors.toList)
+      case Registration(error) => s"sdp: registration failed — ${error.describe}"
+      case BadConfig(detail)   => s"sdp: $detail"
+
+    /** Config mistakes are usage mistakes: the caller reprints the usage
+      * text after [[render]]. Graph/server verdicts stand on their own. */
+    def showUsage: Boolean = this match
+      case BadConfig(_) => true
+      case _            => false
+
+  /** `sc://host:port` → `(host, port)`. A malformed endpoint is an EXPECTED
+    * config failure in the typed channel (`BadConfig`) — the operator fixes
+    * the env var — not an `IllegalArgumentException` defect.
+    *
+    * @param envVar the variable (or setting) name to name in the message
+    */
+  def parseEndpoint(envVar: String, endpoint: String): Either[CommandError, (String, Int)] =
+    endpoint match
+      case s"sc://$host:$port"
+          if host.nonEmpty && port.toIntOption.exists(p => p > 0 && p <= 65535) =>
+        Right((host, port.toInt))
+      case other =>
+        Left(CommandError.BadConfig(s"$envVar must look like sc://host:port, got '$other'"))
 
   /** Assemble + validate the fragments into the canonical manifest. The
     * EXPECTED failure (a cycle, dangling read, unknown column, ...) surfaces

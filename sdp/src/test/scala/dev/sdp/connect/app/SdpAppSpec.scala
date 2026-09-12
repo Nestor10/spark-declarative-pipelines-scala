@@ -1,6 +1,7 @@
 package dev.sdp.connect.app
 
 import dev.sdp.core.*
+import zio.*
 import zio.test.*
 
 /** Task-3 smoke: the offline subcommand logic, tested as ZIO values (no JVM
@@ -32,6 +33,12 @@ object SdpAppSpec extends ZIOSpecDefault:
     )
   )
 
+  /** A real `SdpApp` over the valid pipeline — instantiated, never `main`ed, so
+    * the dispatch table can be driven as an effect. */
+  private object TestApp extends SdpApp:
+    override def name: String        = "spec-pipeline"
+    def pipeline: List[GraphFragment] = validPipeline
+
   def spec = suite("SdpApp offline command logic")(
     test("validate: a sound 2-fragment pipeline succeeds") {
       SdpCommands.validate(validPipeline).exit.map { exit =>
@@ -62,4 +69,114 @@ object SdpAppSpec extends ZIOSpecDefault:
           assertTrue(false) ?? s"expected CommandError.Invalid, got $other"
       }
     },
+    suite("argv parsing (SdpCli)")(
+      test("run --dry is accepted as a dry run; a bare run is a real run") {
+        assertTrue(
+          SdpCli.parse(List("run", "--dry")) == Right(SdpCli.Command.Run(dry = true)),
+          SdpCli.parse(List("run")) == Right(SdpCli.Command.Run(dry = false)),
+        )
+      },
+      test("a typo'd --dry is rejected, never silently a real run") {
+        assertTrue(
+          SdpCli.parse(List("run", "--dry-run")) ==
+            Left(SdpCli.CliError.UnexpectedArg("run", "--dry-run")),
+          SdpCli.parse(List("run", "--drt")) ==
+            Left(SdpCli.CliError.UnexpectedArg("run", "--drt")),
+        )
+      },
+      test("manifest --out takes a path; a bare --out is a missing value") {
+        assertTrue(
+          SdpCli.parse(List("manifest")) == Right(SdpCli.Command.Manifest(None)),
+          SdpCli.parse(List("manifest", "--out", "t/p.sdpm")) ==
+            Right(SdpCli.Command.Manifest(Some("t/p.sdpm"))),
+          SdpCli.parse(List("manifest", "--out")) ==
+            Left(SdpCli.CliError.MissingValue("manifest", "--out")),
+          SdpCli.parse(List("manifest", "--quiet")) ==
+            Left(SdpCli.CliError.UnexpectedArg("manifest", "--quiet")),
+        )
+      },
+      test("validate takes no arguments") {
+        assertTrue(
+          SdpCli.parse(List("validate")) == Right(SdpCli.Command.Validate),
+          SdpCli.parse(List("validate", "--hard")) ==
+            Left(SdpCli.CliError.UnexpectedArg("validate", "--hard")),
+        )
+      },
+      test("no args and --help are usage") {
+        assertTrue(
+          SdpCli.parse(Nil) == Right(SdpCli.Command.Usage),
+          SdpCli.parse(List("--help")) == Right(SdpCli.Command.Usage),
+          SdpCli.parse(List("-h")) == Right(SdpCli.Command.Usage),
+        )
+      },
+    ),
+    suite("dispatch: rendered output + exit code")(
+      test("an unknown command prints the token + usage and exits 1") {
+        for
+          code <- TestApp.dispatch(List("valdate"))
+          err  <- TestConsole.outputErr
+          out  <- TestConsole.output
+        yield assertTrue(
+          code == ExitCode.failure,
+          err.mkString.contains("unknown command 'valdate'"),
+          out.mkString.contains("Usage:"),
+        )
+      },
+      test("an unknown flag on run prints the token + usage and exits 1") {
+        for
+          code <- TestApp.dispatch(List("run", "--dry-run"))
+          err  <- TestConsole.outputErr
+          out  <- TestConsole.output
+        yield assertTrue(
+          code == ExitCode.failure,
+          err.mkString.contains("run: unexpected argument '--dry-run'"),
+          out.mkString.contains("Usage:"),
+        )
+      },
+      test("validate on a sound pipeline exits 0 and prints no error") {
+        for
+          code <- TestApp.dispatch(List("validate"))
+          err  <- TestConsole.outputErr
+        yield assertTrue(code == ExitCode.success, err.isEmpty)
+      },
+      test("--help exits 0 with the usage text") {
+        for
+          code <- TestApp.dispatch(List("--help"))
+          out  <- TestConsole.output
+        yield assertTrue(
+          code == ExitCode.success,
+          out.mkString.contains("Spark Declarative Pipelines runner (spec-pipeline)"),
+        )
+      },
+      test("a malformed SDP_CONNECT_ENDPOINT renders one line + usage, exits 1") {
+        for
+          _    <- TestSystem.putEnv("SDP_CONNECT_ENDPOINT", "localhost:15002")
+          code <- TestApp.dispatch(List("run", "--dry"))
+          err  <- TestConsole.outputErr
+          out  <- TestConsole.output
+        yield assertTrue(
+          code == ExitCode.failure,
+          err.mkString.contains(
+            "sdp: SDP_CONNECT_ENDPOINT must look like sc://host:port, got 'localhost:15002'"
+          ),
+          // one readable line, not a fiber dump
+          !err.mkString.contains("IllegalArgumentException"),
+          out.mkString.contains("Usage:"),
+        )
+      },
+      test("a malformed endpoint is a typed BadConfig, not a defect") {
+        assertTrue(
+          SdpCommands.parseEndpoint("SDP_CONNECT_ENDPOINT", "sc://localhost:15002") ==
+            Right(("localhost", 15002)),
+          SdpCommands
+            .parseEndpoint("SDP_CONNECT_ENDPOINT", "sc://localhost:nope")
+            .left
+            .map(_.render) == Left(
+            "sdp: SDP_CONNECT_ENDPOINT must look like sc://host:port, got 'sc://localhost:nope'"
+          ),
+          SdpCommands.parseEndpoint("SDP_CONNECT_ENDPOINT", "sc://localhost:99999").isLeft,
+          SdpCommands.parseEndpoint("SDP_CONNECT_ENDPOINT", "").isLeft,
+        )
+      },
+    ),
   )

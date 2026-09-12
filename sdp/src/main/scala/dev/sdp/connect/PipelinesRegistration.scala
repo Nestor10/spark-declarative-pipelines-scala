@@ -32,9 +32,17 @@ object PipelinesRegistration:
     case TransportFailure(detail: String)
     case ServerRejected(detail: String)
 
+    /** The manifest carries a construct the pinned wire client cannot encode
+      * (see [[UnsupportedWireFeature]] — AUTO CDC before the 4.2 proto). An
+      * expected, renderable verdict: `validate`/`manifest` accepted the graph
+      * offline, so the author meets it here and must read a sentence, not a
+      * defect trace. */
+    case UnsupportedWire(detail: String)
+
     def describe: String = this match
       case TransportFailure(d) => s"Spark Connect transport failure: $d"
       case ServerRejected(d)   => s"Spark Connect server rejected the pipeline: $d"
+      case UnsupportedWire(d)  => s"unsupported by the pinned Spark Connect wire client: $d"
 
   /** A registered graph plus its run as a **stream** of progress events.
     *
@@ -98,9 +106,15 @@ object PipelinesRegistration:
               r.getPipelineCommandResult.getCreateDataflowGraphResult.getDataflowGraphId
           })
           .orElseFail(RegistrationError.ServerRejected("CreateDataflowGraph returned no graph id"))
-        _ <- ZIO.foreachDiscard(PipelineProtoEncoder.definitions(graphId, manifest)) { cmd =>
-          execute(stub, sessionId, cmd)
-        }
+        // Encoding is pure but gated: an unencodable construct throws
+        // UnsupportedWireFeature. Refine it into the typed channel so the
+        // runner renders a sentence instead of a defect trace.
+        commands <- ZIO
+          .attempt(PipelineProtoEncoder.definitions(graphId, manifest))
+          .refineOrDie { case e: UnsupportedWireFeature =>
+            RegistrationError.UnsupportedWire(e.getMessage)
+          }
+        _ <- ZIO.foreachDiscard(commands)(execute(stub, sessionId, _))
       yield RunHandle(
         graphId,
         runStream(stub, sessionId, PipelineProtoEncoder.startRun(graphId, dry, storage)),

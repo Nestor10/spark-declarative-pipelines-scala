@@ -24,6 +24,10 @@ import zio.*
   *                            only). Reads the environment for the endpoint.
   *   - (no args | --help)   — usage text.
   *
+  * The argv is parsed strictly ([[SdpCli]]): an unknown command, an unknown
+  * flag, or a near-miss like `run --dry-run` prints the offending token plus
+  * the usage text and exits 1. A typo never degrades into a real run.
+  *
   * Configuration is **environment-only** (12factor III — config in env):
   *   - `SDP_CONNECT_ENDPOINT`  Spark Connect endpoint `sc://host:port`
   *                             (default `sc://localhost:15002`, the dev container).
@@ -72,31 +76,25 @@ trait SdpApp extends ZIOAppDefault:
   private val effectiveName: UIO[String] =
     env(NameVar).map(_.filter(_.nonEmpty).getOrElse(name))
 
-  /** Build the run configuration purely from the environment. */
-  private val runConfig: UIO[SdpCommands.RunConfig] =
+  /** Build the run configuration purely from the environment. A malformed
+    * endpoint fails in the typed channel (`CommandError.BadConfig`), so the
+    * operator reads one line plus the usage text. */
+  private val runConfig: IO[SdpCommands.CommandError, SdpCommands.RunConfig] =
     for
       endpoint <- env(EndpointVar).map(_.filter(_.nonEmpty).getOrElse(DefaultEndpoint))
       nm       <- effectiveName
-      (host, port) = parseEndpoint(endpoint)
+      hostPort <- ZIO.fromEither(SdpCommands.parseEndpoint(EndpointVar, endpoint))
+      (host, port) = hostPort
       storageOpt <- env(StorageVar)
       storage = storageOpt.filter(_.nonEmpty).getOrElse(s"file:///tmp/sdp/$nm")
       defaultCatalog  <- env(DefaultCatalogVar).map(_.filter(_.nonEmpty))
       defaultDatabase <- env(DefaultDatabaseVar).map(_.filter(_.nonEmpty))
     yield SdpCommands.RunConfig(host, port, storage, defaultCatalog, defaultDatabase)
 
-  /** Read one environment variable (12factor: config from env). */
+  /** Read one environment variable (12factor: config from env). Goes through
+    * the ZIO `System` service so tests can stub the environment. */
   private def env(key: String): UIO[Option[String]] =
-    ZIO.succeed(Option(java.lang.System.getenv(key)))
-
-  /** `sc://host:port` → (host, port); a malformed endpoint is a config
-    * defect — die loudly, the operator must fix the env. */
-  private def parseEndpoint(endpoint: String): (String, Int) =
-    endpoint match
-      case s"sc://$host:$port" if port.toIntOption.isDefined => (host, port.toInt)
-      case other =>
-        throw new IllegalArgumentException(
-          s"$EndpointVar must look like sc://host:port, got '$other'"
-        )
+    zio.System.env(key).orDie
 
   // -------------------------------------------------------------------
   // entry point
@@ -105,17 +103,20 @@ trait SdpApp extends ZIOAppDefault:
   override def run: ZIO[ZIOAppArgs & Scope, Any, Any] =
     getArgs.map(_.toList).flatMap(dispatch)
 
-  /** Map parsed args to a subcommand effect, then to an exit code. */
-  private def dispatch(args: List[String]): URIO[Any, ExitCode] =
-    args match
-      case Nil                          => printUsage.as(ExitCode.success)
-      case "--help" :: _ | "-h" :: _    => printUsage.as(ExitCode.success)
-      case "validate" :: _              => finish(SdpCommands.validate(pipeline))
-      case "manifest" :: rest           => finish(manifestCmd(parseOut(rest)))
-      case "run" :: rest                => finish(runCmd(rest.contains("--dry")))
-      case other :: _ =>
-        (Console.printLineError(s"sdp: unknown command '$other'").orDie *> printUsage)
-          .as(ExitCode.failure)
+  /** Map an argv to a subcommand effect, then to an exit code. Parsing is the
+    * pure [[SdpCli.parse]]; an unrecognised command or flag prints the
+    * offending token plus the usage text and exits 1 — nothing runs.
+    *
+    * `private[app]` so the spec can drive it directly (the dispatch table,
+    * not the JVM process, is what must be tested). */
+  private[app] def dispatch(args: List[String]): URIO[Any, ExitCode] =
+    SdpCli.parse(args) match
+      case Left(err) =>
+        (Console.printLineError(err.render).orDie *> printUsage).as(ExitCode.failure)
+      case Right(SdpCli.Command.Usage)          => printUsage.as(ExitCode.success)
+      case Right(SdpCli.Command.Validate)       => finish(SdpCommands.validate(pipeline))
+      case Right(SdpCli.Command.Manifest(out))  => finish(manifestCmd(out))
+      case Right(SdpCli.Command.Run(dry))       => finish(runCmd(dry))
 
   /** `manifest`: render and either write to `out` or print to stdout. */
   private def manifestCmd(out: Option[String]): IO[SdpCommands.CommandError, Unit] =
@@ -143,19 +144,15 @@ trait SdpApp extends ZIOAppDefault:
     yield ()
 
   /** Render expected failures and translate to an exit code; defects still
-    * die. A success exits 0, a `CommandError` prints + exits 1. */
+    * die. A success exits 0, a `CommandError` prints + exits 1 — and a config
+    * mistake reprints the usage text. */
   private def finish(effect: IO[SdpCommands.CommandError, Unit]): URIO[Any, ExitCode] =
     effect.foldZIO(
-      err => Console.printLineError(err.render).orDie.as(ExitCode.failure),
+      err =>
+        (Console.printLineError(err.render).orDie *> ZIO.when(err.showUsage)(printUsage))
+          .as(ExitCode.failure),
       _ => ZIO.succeed(ExitCode.success),
     )
-
-  /** `--out <path>` (or `-o <path>`) from the residual args. */
-  private def parseOut(args: List[String]): Option[String] =
-    args match
-      case ("--out" | "-o") :: path :: _ => Some(path)
-      case _ :: rest                     => parseOut(rest)
-      case Nil                           => None
 
   private val printUsage: UIO[Unit] =
     Console
