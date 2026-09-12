@@ -51,15 +51,30 @@ Gated — they skip unless enabled:
 SDP_INTEGRATION=1 sbt 'sdp/Test/runMain dev.sdp.connect.AlgebraOracleSpec'
 SDP_INTEGRATION=1 sbt 'sdp/Test/runMain dev.sdp.connect.PipelinesRegistrationIntegrationSpec'
 SDP_INTEGRATION=1 sbt 'sdp/Test/runMain dev.sdp.connect.FunctionLibrarySpec'
+SDP_INTEGRATION=1 sbt 'sdp/Test/runMain dev.sdp.connect.AutoCdcE2eSpec'    # 4.2.0 image
 ```
 
-Each suite starts (and always tears down) an `apache/spark:4.1.2` container via the
-`podman`/`docker` CLI — no Testcontainers, engine-neutral. First run
-pulls the image (multi-GB). The env var must reach the *forked test JVM*: if you started the
-sbt server without it, `sbt shutdown` first, then run with the var set.
+Each suite starts (and always tears down) a Spark container via the `podman`/`docker` CLI —
+no Testcontainers, engine-neutral. The env var must reach the *forked test JVM*: if you
+started the sbt server without it, `sbt shutdown` first, then run with the var set.
+
+**Images.** The default is `apache/spark:4.1.2` (the conformance-oracle pin). `AutoCdcE2eSpec`
+asks for `apache/spark:4.2.0` instead — AUTO CDC needs a 4.2+ server — which is a **separate
+~1.3 GB pull**, several minutes the first time; `podman pull docker.io/apache/spark:4.2.0`
+ahead of the run if you would rather watch the progress bar. `SDP_SPARK_IMAGE=<image>`
+overrides every suite at once, which is how a candidate Spark build gets smoke-tested before
+anything is pinned.
 
 `AlgebraOracleSpec` is the **semantic oracle**: every algebra capability is verified through
 the server's `AnalyzePlan` before being claimed in `SupportedCapabilities`.
+
+`AutoCdcE2eSpec` (~50 s after the pull) registers a real AUTO CDC SCD1 pipeline against 4.2.0:
+handshake, dry-run validation, the materialized target's schema, the server's identifier-only
+rule for keys, and the `once` refusal. It deliberately asserts a **ceiling** rather than merge
+results: AUTO CDC writes through DSv2 `MERGE`, and no Spark 4.2 table format implements
+`SupportsRowLevelOperations` yet — parquet and Delta 4.4.0 are both refused with
+`AUTOCDC_TARGET_DOES_NOT_SUPPORT_MERGE`, and Iceberg has no 4.2 build. See behavioral rows
+CDC-4/CDC-5.
 
 ## The coverage matrix — what we have and don't
 
@@ -121,8 +136,9 @@ re-assert on re-run, re-run NULL semantics.
 
 So `BehaviorInventory` (test sources) enumerates the *server behaviors* an SDP client depends
 on — registration sequence and error surfaces, graph defaults and name resolution, fresh run
-vs re-run materialization, full refresh, `once` flows, external-input resolution, streaming
-triggers and run termination, event/progress wording, dry-run semantics — one row each, with
+vs re-run materialization, full refresh, `once` flows, AUTO CDC registration and execution,
+external-input resolution, streaming triggers and run termination, event/progress wording,
+dry-run semantics — one row each, with
 a **Spark source anchor** (path → class.method in `../spark`) and an honest status:
 `Covered(spec)` / `Uncovered` / `NotApplicable(reason)`.
 
@@ -137,11 +153,14 @@ in normal `testFull`:
 - behavior verified **by hand** (a live session, a measured experiment) is still `Uncovered`,
   with the receipt in the row's note. Only an automated spec counts.
 
-Most rows are Uncovered today, and that is the honest headline: the container-gated
-`PipelinesRegistrationIntegrationSpec` covers the registration handshake, dry-run validation,
-the dangling-upstream rejection and external-input resolution failure; re-run, full-refresh
-and graph-defaults behavior is known only from hand-run sessions. The report is generated, not
-committed — regenerate it whenever you want the current accounting.
+Most rows are Uncovered today, and that is the honest headline (13 / 49 in scope as of
+2026-09-12): the container-gated `PipelinesRegistrationIntegrationSpec` covers the
+registration handshake, dry-run validation, the dangling-upstream rejection and
+external-input resolution failure; `AutoCdcE2eSpec` covers AUTO CDC registration, the
+identifier-only rule, the materialized target schema, the MERGE-capability ceiling and the
+`once` refusal; re-run, full-refresh and graph-defaults behavior is known only from hand-run
+sessions. The report is generated, not committed — regenerate it whenever you want the
+current accounting.
 
 ## Upstream watch — is the pin still current?
 

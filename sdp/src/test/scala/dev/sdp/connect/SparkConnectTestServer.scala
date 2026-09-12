@@ -19,37 +19,62 @@ import zio.*
   * Facts verified by the F9a spike (2026-06-06): `apache/spark:4.1.2` ships
   * `spark-pipelines_2.13` in its distribution; `start-connect-server.sh`
   * with `SPARK_NO_DAEMONIZE=1` runs in the foreground; readiness is the log
-  * line "Spark Connect server started".
+  * line "Spark Connect server started". All three still hold on 4.2.0
+  * (verified 2026-09-12).
+  *
+  * The image is a **parameter**: suites that need a specific server generation
+  * call [[layerFor]], and `SDP_SPARK_IMAGE` overrides every suite at once for
+  * trying a candidate build.
   */
 object SparkConnectTestServer:
 
   final case class Server(host: String, port: Int)
 
-  private val Image     = "docker.io/apache/spark:4.1.2"
+  /** The conformance-oracle pin: everything that only needs *analysis* runs
+    * here, and the drift-gated inventory is rendered against this era. */
+  val DefaultImage = "docker.io/apache/spark:4.1.2"
+
+  /** 4.2.0 (released, not master): the first server that speaks AUTO CDC. */
+  val Spark42Image = "docker.io/apache/spark:4.2.0"
+
+  /** Readiness mark — verified unchanged on 4.2.0, where the line reads
+    * "Spark Connect server started at: [::]:15002" (the prefix is the stable
+    * part). It is on **stderr**, which is why [[awaitReady]] captures both
+    * streams (D3, learned the hard way). */
   private val ReadyMark = "Spark Connect server started"
 
-  val layer: ZLayer[Any, Throwable, Server] =
-    ZLayer.scoped {
-      for
-        cli  <- detectCli
-        name <- Random.nextUUID.map(u => s"sdp-it-$u")
-        _ <- ZIO.acquireRelease(
-          ZIO.attemptBlocking {
-            val cmd = List(
-              cli, "run", "-d", "--name", name,
-              "-p", "127.0.0.1::15002", // random host port, loopback only
-              "-e", "SPARK_NO_DAEMONIZE=1",
-              Image,
-              "/opt/spark/sbin/start-connect-server.sh",
-            )
-            val out = cmd.!!
-            require(out.trim.nonEmpty, s"container failed to start: $out")
-          }
-        )(_ => ZIO.attemptBlocking(List(cli, "rm", "-f", name).!!).ignoreLogged)
-        _    <- awaitReady(cli, name).timeoutFail(new RuntimeException(s"$Image not ready within 120s"))(120.seconds)
-        port <- mappedPort(cli, name)
-      yield Server("127.0.0.1", port)
-    }
+  /** The default server: [[DefaultImage]], or whatever `SDP_SPARK_IMAGE` names.
+    * The env override applies to [[layerFor]] too, so one variable re-points
+    * every gated suite at a candidate server (that is how a Spark upgrade gets
+    * smoke-tested before anything is pinned). */
+  val layer: ZLayer[Any, Throwable, Server] = layerFor(DefaultImage)
+
+  /** A server on a specific image — for suites that require a *particular*
+    * server generation (AUTO CDC needs 4.2+, so `AutoCdcE2eSpec` asks for
+    * [[Spark42Image]] rather than inheriting the 4.1 oracle pin). */
+  def layerFor(image: String): ZLayer[Any, Throwable, Server] =
+    ZLayer.scoped(start(sys.env.getOrElse("SDP_SPARK_IMAGE", image)))
+
+  private def start(image: String): ZIO[Scope, Throwable, Server] =
+    for
+      cli  <- detectCli
+      name <- Random.nextUUID.map(u => s"sdp-it-$u")
+      _ <- ZIO.acquireRelease(
+        ZIO.attemptBlocking {
+          val cmd = List(
+            cli, "run", "-d", "--name", name,
+            "-p", "127.0.0.1::15002", // random host port, loopback only
+            "-e", "SPARK_NO_DAEMONIZE=1",
+            image,
+            "/opt/spark/sbin/start-connect-server.sh",
+          )
+          val out = cmd.!!
+          require(out.trim.nonEmpty, s"container failed to start: $out")
+        }
+      )(_ => ZIO.attemptBlocking(List(cli, "rm", "-f", name).!!).ignoreLogged)
+      _    <- awaitReady(cli, name).timeoutFail(new RuntimeException(s"$image not ready within 120s"))(120.seconds)
+      port <- mappedPort(cli, name)
+    yield Server("127.0.0.1", port)
 
   private val detectCli: Task[String] =
     ZIO

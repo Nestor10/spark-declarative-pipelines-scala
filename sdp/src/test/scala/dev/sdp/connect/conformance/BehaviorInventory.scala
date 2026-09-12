@@ -29,7 +29,10 @@ package dev.sdp.connect.conformance
   *     spec counts as coverage.
   *
   * Anchors are relative to the Spark checkout (`../spark`), read at master
-  * HEAD 919f0808549 (2026-09-12).
+  * HEAD 919f0808549 (2026-09-12). **Master is not the server anyone runs**: the
+  * AUTO CDC area (CDC-*) is anchored to the `v4.2.0` tag instead, because that
+  * is the released server those rows were measured against — where master
+  * differs (SCD2 exists there, SCD1-only here), the row says so.
   */
 object BehaviorInventory:
 
@@ -43,6 +46,7 @@ object BehaviorInventory:
     case FullRefresh    extends Area("full refresh / reset semantics")
     case OnceFlows      extends Area("once (backfill) flow semantics")
     case ExternalInputs extends Area("external input resolution")
+    case AutoCdc        extends Area("AUTO CDC (SCD1) registration + execution")
     case Streaming      extends Area("streaming trigger + run termination")
     case Events         extends Area("event / progress message shapes")
     case DryRun         extends Area("dry run (StartRun dry=true)")
@@ -88,6 +92,7 @@ object BehaviorInventory:
   private val RegistrationIT = "dev.sdp.connect.PipelinesRegistrationIntegrationSpec"
   private val RunProgressS   = "dev.sdp.core.RunProgressSpec"
   private val VersionGateS   = "dev.sdp.connect.VersionGateSpec"
+  private val AutoCdcIT      = "dev.sdp.connect.AutoCdcE2eSpec"
 
   private def reg(id: String, what: String, anchor: String, coverage: Coverage, m: List[String] = Nil) =
     Behavior(id, Area.Registration, what, anchor, coverage, m)
@@ -286,9 +291,9 @@ object BehaviorInventory:
     Behavior(
       "ONCE-1-server-rejects",
       Area.OnceFlows,
-      "DefineFlow.once is rejected OUTRIGHT by the Connect server on master — the first check in defineFlow, before the graph lookup",
+      "DefineFlow.once is rejected OUTRIGHT by the Connect server — the first check in defineFlow, before the graph lookup — on 4.1.2, on RELEASED 4.2.0 (measured) and at master HEAD alike",
       "sql/connect/server/.../connect/pipelines/PipelinesHandler.scala → PipelinesHandler.defineFlow",
-      Coverage.Uncovered("FINDING: still rejected at master HEAD, not just on 4.1.2 as our integration-spec comment says. Our `once` DSL surface validates and manifests offline but cannot be registered on ANY current server"),
+      Coverage.Covered(AutoCdcIT, "a once=true flow is sent to a live 4.2.0 server and comes back DEFINE_FLOW_ONCE_OPTION_NOT_SUPPORTED — measured on the RELEASE, not inferred from master"),
       List("DEFINE_FLOW_ONCE_OPTION_NOT_SUPPORTED", "0A000"),
     ),
     Behavior(
@@ -304,6 +309,74 @@ object BehaviorInventory:
       "the engine-side once machinery (AppendOnceFlow, IDLE-on-no-data, skip-unless-full-refresh) exists but is unreachable through Connect: every registration path hardcodes once = false",
       "sql/pipelines/.../graph/Flow.scala → AppendOnceFlow; sql/pipelines/.../graph/TriggeredGraphExecution.scala → TriggeredGraphExecution.topologicalExecution",
       Coverage.NotApplicable("no client can exercise it on master; recorded so that flipping ONCE-1 upstream has a row waiting"),
+    ),
+
+    // ------------------------------------------------------------------ AUTO CDC
+    // Anchors are v4.2.0 (the released server this area was measured against);
+    // master differs only where a row says so. AUTO CDC is the first construct
+    // whose *server* is newer than our oracle pin, so every row here was taken
+    // from a live 4.2.0 container on 2026-09-12.
+    Behavior(
+      "CDC-1-flow-registration",
+      Area.AutoCdc,
+      "DefineFlow.auto_cdc_flow_details registers an AutoCdcFlow: `source` is a NAME parsed as a table identifier and modelled as a STREAMING UnresolvedRelation (never a relation on the wire), sequence_by and apply_as_deletes become Columns, and an unset source or sequence_by is refused",
+      "sql/connect/server/.../connect/pipelines/PipelinesHandler.scala → PipelinesHandler.buildAutoCdcFlow",
+      Coverage.Covered(AutoCdcIT, "a real AUTO CDC pipeline registers against a live 4.2.0 server and passes server-side dry-run validation"),
+      List("AUTOCDC_MISSING_SOURCE", "AUTOCDC_MISSING_SEQUENCE_BY"),
+    ),
+    Behavior(
+      "CDC-2-identifiers-only",
+      Area.AutoCdc,
+      "keys, column_list and except_column_list must each resolve to a bare UnresolvedAttribute — any other expression is refused; column_list and except_column_list are mutually exclusive",
+      "sql/connect/server/.../connect/pipelines/PipelinesHandler.scala → PipelinesHandler.buildAutoCdcFlow (asUnqualifiedColumnName / columnSelection)",
+      Coverage.Covered(AutoCdcIT, "sends `col(\"id\") + lit(1)` as a key and asserts the server's AUTOCDC_NON_COLUMN_IDENTIFIER — our encoder will put any Ex on the wire, so this is the real boundary"),
+      List("AUTOCDC_NON_COLUMN_IDENTIFIER", "AUTOCDC_BOTH_COLUMN_LIST_AND_EXCEPT_COLUMN_LIST"),
+    ),
+    Behavior(
+      "CDC-3-target-schema",
+      Area.AutoCdc,
+      "the AUTO CDC target is materialized with the column-selected source schema PLUS a reserved `__spark_autocdc_metadata` struct (deleteSequence/upsertSequence, typed by the sequencing column) — the selection lists are applied to the target's schema, not just to the merge",
+      "sql/pipelines/.../autocdc/Scd1BatchProcessor.scala → Scd1BatchProcessor.cdcMetadataColSchema; sql/pipelines/.../autocdc/AutoCdcReservedNames.scala",
+      Coverage.Covered(AutoCdcIT, "runs a flow with exceptColumnList = [op] and reads the materialized target's schema back through AnalyzePlan: id/name/seq + __spark_autocdc_metadata, `op` absent — the only server-observable proof that field 9 crossed the wire"),
+      List("__spark_autocdc_metadata"),
+    ),
+    Behavior(
+      "CDC-4-target-must-support-merge",
+      Area.AutoCdc,
+      "the flow refuses to start unless the target table's V2 connector implements SupportsRowLevelOperations — checked by loading the table, before any data moves, and retried (then fatal) like any flow failure",
+      "sql/pipelines/.../graph/FlowExecution.scala → AutoCdcMergeWriteBase.requireDestinationSupportsRowLevelOps (called from Scd1MergeStreamingWrite's constructor)",
+      Coverage.Covered(AutoCdcIT, "asserts the typed refusal on the stock image's parquet target — the ceiling itself is the assertion"),
+      List("AUTOCDC_TARGET_DOES_NOT_SUPPORT_MERGE", "0A000"),
+    ),
+    Behavior(
+      "CDC-5-scd1-merge-semantics",
+      Area.AutoCdc,
+      "per microbatch: deduplicate to the latest event per key by sequence, project the CDC metadata, apply column selection, drop events superseded by tombstones, then MERGE onto the auxiliary table and the target (upsert wins on >=, delete wins on >)",
+      "sql/pipelines/.../autocdc/Scd1BatchProcessor.scala → Scd1BatchProcessor.reconcileMicrobatch / mergeMicrobatchOntoTarget",
+      Coverage.Uncovered("BLOCKED by CDC-4, measured 2026-09-12: no Spark 4.2 table format implements SupportsRowLevelOperations — parquet (V1) and Delta 4.4.0 are both refused (DeltaTableV2 implements only Table/SupportsWrite/V2TableWithV1Fallback — read off the jar), and Iceberg has no 4.2 build. Revisit when one exists"),
+    ),
+    Behavior(
+      "CDC-6-rerun-from-checkpoint",
+      Area.AutoCdc,
+      "an AUTO CDC flow is a streaming foreachBatch query, so a re-run resumes from its checkpoint and applies only newly-arrived CDC rows; full refresh drops the auxiliary table and replays",
+      "sql/pipelines/.../autocdc/Scd1ForeachBatchHandler.scala → Scd1ForeachBatchHandler.execute; sql/pipelines/.../graph/FlowExecution.scala → AutoCdcAuxiliaryTable.identifier",
+      Coverage.Uncovered("BLOCKED by CDC-4 — the same ceiling; the re-run leg of this suite is written but cannot assert data"),
+    ),
+    Behavior(
+      "CDC-7-declared-not-honored",
+      Area.AutoCdc,
+      "apply_as_truncates, ignore_null_updates_column_list and ignore_null_updates_except_column_list are accepted on the wire and then IGNORED by the 4.2.0 engine — they reach neither ChangeArgs nor the merge",
+      "sql/connect/server/.../connect/pipelines/PipelinesHandler.scala → PipelinesHandler.buildAutoCdcFlow (TODO SPARK-57092 / SPARK-57093)",
+      Coverage.Uncovered("we emit all three (the author asked, the wire accepts, the engine will start honoring them without a client change). Nothing asserts the silence — and the silence is the hazard: a truncate condition that never fires looks like working code"),
+      List("SPARK-57092", "SPARK-57093"),
+    ),
+    Behavior(
+      "CDC-8-one-flow-per-target",
+      Area.AutoCdc,
+      "an AUTO CDC target must have exactly ONE input flow — a multi-flow table containing any AUTO CDC flow is refused at graph assembly",
+      "sql/pipelines/.../graph/GraphValidations.scala → GraphValidations.validateMultiQueryTables",
+      Coverage.Uncovered("our offline validator does not know this rule yet, so the verdict would come from the server; nothing exercises it"),
+      List("AUTOCDC_MULTIPLE_FLOWS_TO_TARGET"),
     ),
 
     // ---------------------------------------------------------- external inputs
@@ -417,6 +490,15 @@ object BehaviorInventory:
       "the event sender is closed before StartRun returns, so every event precedes the final result or error on the response stream",
       "sql/connect/server/.../connect/pipelines/PipelineEventSender.scala → PipelineEventSender.shutdown",
       Coverage.Uncovered("the drain-then-verdict shape of RunHandle depends on this guarantee"),
+    ),
+
+    Behavior(
+      "EV-7-failure-is-multiline",
+      Area.Events,
+      "a FAILED flow event's message is MULTI-LINE: `Flow 'x' has FAILED.` then a blank-prefixed `Error: [ERROR_CLASS] …` block carrying the real diagnostic",
+      "sql/pipelines/.../logging/FlowProgressEventLogger.scala → recordFailed; sql/connect/server/.../connect/pipelines/PipelineEventSender.scala → constructProtoEvent",
+      Coverage.Uncovered("FINDING (measured on 4.2.0, 2026-09-12): RunProgress.flowName's regexes are single-line (`.*` does not cross \\n), so every real failure parses as flow = None — the state is right, the attribution is lost exactly when a DAG view would want it most. Fixture-level cousin of EV-3; P3.4 material"),
+      List("Flow 'x' has FAILED.\nError: [..]"),
     ),
 
     // --------------------------------------------------------------------- dry run

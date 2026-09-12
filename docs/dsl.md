@@ -170,12 +170,28 @@ branch and the server would see a `DefineFlow` with no details:
 > AUTO CDC flow (SCD type 1) 'dim_customers_auto_cdc' (target 'dim_customers')
 > needs a Spark 4.2+ server; sc://localhost:15002 reports 4.1.2
 
-Two 4.2.0 server-side caveats worth knowing, read from
+**The target must support MERGE.** AUTO CDC writes through a DataSource-v2
+row-level `MERGE`, so the target table's connector must implement
+`SupportsRowLevelOperations`; otherwise the flow fails before any data moves:
+
+> [AUTOCDC_TARGET_DOES_NOT_SUPPORT_MERGE] Cannot start AutoCDC flow: the target
+> table `spark_catalog`.`default`.`dim_customers` (format: parquet) does not
+> support row-level operations.
+
+As of Spark 4.2.0 (measured 2026-09-12) this rules out the usual open stack:
+parquet is a V1 file source, Delta 4.4.0's `DeltaTableV2` implements
+`SupportsWrite`/`V2TableWithV1Fallback` but not the row-level contract, and
+Iceberg — which does implement it — has no Spark 4.2 build yet. Declare AUTO CDC
+pipelines today, and run them where a MERGE-capable catalog exists.
+
+Three more 4.2.0 server-side facts, read from
 `PipelinesHandler.buildAutoCdcFlow`: `applyAsTruncates` and the two
 `ignoreNullUpdates*` lists are accepted on the wire but **not yet honored by the
-4.2.0 engine** (SPARK-57092 / SPARK-57093); and `keys`, `columnList` and
-`exceptColumnList` must be plain column references (`col("id")`) — an expression
-there is rejected as `AUTOCDC_NON_COLUMN_IDENTIFIER`.
+4.2.0 engine** (SPARK-57092 / SPARK-57093) — a truncate condition that never
+fires looks like working code; `keys`, `columnList` and `exceptColumnList` must
+be plain column references (`col("id")`), an expression there is rejected as
+`AUTOCDC_NON_COLUMN_IDENTIFIER`; and the target's schema is the *selected*
+source columns plus a reserved `__spark_autocdc_metadata` struct.
 
 The manifest header bumps to `sdp-manifest/3` when a pipeline contains an AUTO
 CDC flow (or a `once` flow, below); pipelines without these constructs still

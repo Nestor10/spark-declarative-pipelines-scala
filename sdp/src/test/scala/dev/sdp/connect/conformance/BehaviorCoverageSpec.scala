@@ -29,8 +29,8 @@ object BehaviorCoverageSpec extends ZIOSpecDefault:
         try { val _ = Class.forName(fqn, false, loader); true }
         catch case _: ClassNotFoundException => false
 
-  /** The frozen snapshot: every behavior id and its status (45 rows — 8 covered,
-    * 5 not applicable, 32 honest gaps). A coverage change must be reflected here
+  /** The frozen snapshot: every behavior id and its status (54 rows — 13 covered,
+    * 5 not applicable, 36 honest gaps). A coverage change must be reflected here
     * in the same commit that changes it. */
   private val expectedSnapshot: List[(String, String)] = List(
     "REG-1-command-envelope"         -> "Covered(PipelinesRegistrationIntegrationSpec)",
@@ -58,9 +58,17 @@ object BehaviorCoverageSpec extends ZIOSpecDefault:
     "FR-2-checkpoint-roll"           -> "Uncovered",
     "FR-3-selection-rules"           -> "Uncovered",
     "FR-4-reset-allowed"             -> "Uncovered",
-    "ONCE-1-server-rejects"          -> "Uncovered",
+    "ONCE-1-server-rejects"          -> "Covered(AutoCdcE2eSpec)",
     "ONCE-2-presence-not-value"      -> "Uncovered",
     "ONCE-3-dormant-engine"          -> "NotApplicable",
+    "CDC-1-flow-registration"        -> "Covered(AutoCdcE2eSpec)",
+    "CDC-2-identifiers-only"         -> "Covered(AutoCdcE2eSpec)",
+    "CDC-3-target-schema"            -> "Covered(AutoCdcE2eSpec)",
+    "CDC-4-target-must-support-merge" -> "Covered(AutoCdcE2eSpec)",
+    "CDC-5-scd1-merge-semantics"     -> "Uncovered",
+    "CDC-6-rerun-from-checkpoint"    -> "Uncovered",
+    "CDC-7-declared-not-honored"     -> "Uncovered",
+    "CDC-8-one-flow-per-target"      -> "Uncovered",
     "EXT-1-external-resolution"      -> "Uncovered",
     "EXT-2-missing-external"         -> "Covered(PipelinesRegistrationIntegrationSpec)",
     "EXT-3-in-graph-virtual"         -> "Uncovered",
@@ -75,6 +83,7 @@ object BehaviorCoverageSpec extends ZIOSpecDefault:
     "EV-4-no-terminal-failure-event" -> "Covered(PipelinesRegistrationIntegrationSpec)",
     "EV-5-dropped-events"            -> "Uncovered",
     "EV-6-ordering"                  -> "Uncovered",
+    "EV-7-failure-is-multiline"      -> "Uncovered",
     "DRY-1-validate-only"            -> "Covered(PipelinesRegistrationIntegrationSpec)",
     "DRY-2-indistinguishable"        -> "Uncovered",
     "DRY-3-validation-set"           -> "Uncovered",
