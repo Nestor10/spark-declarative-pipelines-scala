@@ -64,7 +64,7 @@ the server's `AnalyzePlan` before being claimed in `SupportedCapabilities`.
 ## The coverage matrix — what we have and don't
 
 ```
-sbt 'sbtSparkPipelines/Test/runMain dev.sdp.plugin.conformance.PrintCoverage'
+sbt 'sdp/Test/runMain dev.sdp.connect.conformance.PrintCoverage'
 ```
 
 Prints the full wire-surface matrix — per-tier relation coverage with the unsupported entries
@@ -100,12 +100,44 @@ every capability claim names a real wire field. It also prints the coverage repo
 2. Regenerate the snapshot:
 
    ```
-   sbt 'sbtSparkPipelines/Test/runMain dev.sdp.plugin.conformance.RenderInventory \
-     sbt-spark-pipelines/src/test/resources/spark-connect-inventory.txt'
+   sbt 'sdp/Test/runMain dev.sdp.connect.conformance.RenderInventory \
+     sdp/src/test/resources/spark-connect-inventory.txt'
    ```
 
 3. **The git diff of the snapshot is the upstream change report.** Triage any new relation
    entries in `ConnectTiers` (the build fails until every one is classified).
+
+## Upstream watch — is the pin still current?
+
+```
+scripts/upstream-watch.sh                  # report to stdout, file nothing
+scripts/upstream-watch.sh --no-inventory   # version + proto intel only (no build)
+scripts/upstream-watch.sh --pin 4.1.2      # pretend we pin an older version
+scripts/upstream-watch.sh --candidate 4.1.3  # "what would THIS release change?"
+```
+
+Runs weekly in CI (`.github/workflows/upstream-watch.yml`) and on demand. It reads the pin
+out of `build.sbt`, asks Maven Central for newer `spark-connect-common_2.13` versions
+(previews/RCs reported separately, and used as the candidate only when nothing stable is
+newer), re-renders the conformance inventory **against the candidate artifact** and diffs it
+against the committed snapshot, then reads `pipelines.proto` from apache/spark **master** for
+the earliest possible intelligence about the next release. With drift, it opens-or-updates one
+issue labelled `upstream-watch`; with none, it exits 0 silently. It never bumps the pin —
+`protobuf-java`/`grpc` must match the release's own pom (D2), which is a human judgment.
+
+Two mechanics worth knowing before touching it:
+
+- The candidate render works because `build.sbt` reads the version from a **launch-time system
+  property** (`sdp.connect.common.version`, default `4.2.0`). That is a load-time setting, not
+  `sys.props` inside a cached task body — the thing the cache rules forbid.
+- It must be passed as **`SBT_OPTS=-Dsdp.connect.common.version=…`**, and any warm sbt server
+  must be stopped first: sbt 2's thin client does not forward a command-line `-D` to the server
+  JVM, and a warm server has already evaluated `build.sbt`. Either mistake renders the
+  inventory against the *current* pin and reports a clean diff — a false all-clear. The script
+  therefore stops the server, passes `SBT_OPTS`, and **verifies from sbt's own
+  `libraryDependencies` output** that the candidate was really resolved, failing loudly if not.
+  (It also stops the server afterwards, so your next `sbt compile` is not silently on the
+  candidate.)
 
 ## Publishing locally (for sandbox/e2e experiments)
 

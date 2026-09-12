@@ -80,6 +80,25 @@ ThisBuild / scalacOptions ++= Seq(
 // Pin ZIO once for every module that needs it.
 val zioVersion = "2.1.26"
 
+// The pinned Spark Connect wire version — the ONE place it is written.
+//
+// Overridable at sbt LAUNCH time — as `SBT_OPTS=-Dsdp.connect.common.version=…`,
+// because sbt 2's thin client does NOT forward a command-line -D to the server
+// JVM, and a warm server has already evaluated this file (the script stops it
+// first and verifies the resolved version) — for exactly one purpose: the
+// upstream-watch workflow
+// (`scripts/upstream-watch.sh`) re-renders the conformance inventory against a
+// candidate release and diffs it against the committed snapshot, WITHOUT
+// editing build.sbt. Normal builds never pass the property and are byte-for-byte
+// unchanged. The pin itself is only ever bumped by hand — protobuf-java and
+// grpc must match the chosen Spark release's own pom (see DECISIONS D2), which
+// is a human judgment, so the watch reports and never commits.
+//
+// This is a setting evaluated at build LOAD, not inside a cached task body —
+// the CLAUDE.md prohibition is on `sys.props` in cached tasks, where it would
+// break cache stability.
+val sparkConnectCommonVersion = sys.props.getOrElse("sdp.connect.common.version", "4.2.0")
+
 // ---------------------------------------------------------------------
 // sdp — THE library: pure domain core + ZIO app services + runtime
 //   plan-builder DSL + Spark Connect client + the SdpApp runner.
@@ -97,8 +116,10 @@ lazy val sdp = (project in file("sdp"))
       // construction. intransitive: keep Spark's 2.13 closure out of our
       // graph; protobuf-java is the one real runtime need.
       // 4.2.0: adds AutoCdcFlowDetails (SCD1/SCD2) + once flows to the wire —
-      // see PipelineProtoEncoder GATE(spark-4.2).
-      ("org.apache.spark" % "spark-connect-common_2.13" % "4.2.0").intransitive(),
+      // see PipelineProtoEncoder GATE(spark-4.2). Version from
+      // `sparkConnectCommonVersion` above (launch-overridable for the
+      // upstream-watch job only).
+      ("org.apache.spark" % "spark-connect-common_2.13" % sparkConnectCommonVersion).intransitive(),
       // Spark 4.x generates protobuf code against the 4.x runtime
       // (RuntimeVersion checks); Spark v4.2.0 pom pins 4.33.5 — match it,
       // don't chase latest.

@@ -1,0 +1,49 @@
+# Weekly Spark Connect currency check.
+#
+# All the logic lives in `scripts/upstream-watch.sh` so it can be run (and
+# debugged) locally — this workflow only supplies a JVM, sbt, and a token. It
+# reports; it NEVER bumps the pin: protobuf-java and grpc have to match the
+# chosen Spark release's own pom (DECISIONS D2), and that is a human judgment.
+#
+# No newer version than the pin ⇒ the job succeeds quietly and files nothing.
+name: upstream-watch
+
+on:
+  schedule:
+    # Mondays, 06:17 UTC. An odd minute on purpose — the top of the hour is
+    # where every cron job on GitHub piles up and gets delayed.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write # the one open-or-updated `upstream-watch` issue
+
+concurrency:
+  group: upstream-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: sbt
+
+      - name: Setup sbt
+        uses: sbt/setup-sbt@v1
+
+      # The script: read the pin, ask Central what is newer, re-render the
+      # conformance inventory against the candidate, diff it, read apache/spark
+      # master's pipelines.proto for early intel, and open-or-update ONE issue.
+      - name: Check for upstream drift
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/upstream-watch.sh --file-issue
