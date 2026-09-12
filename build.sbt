@@ -86,6 +86,12 @@ lazy val publishSettings = Seq(
 // version instead (that is exactly what the example-refresh flow does).
 ThisBuild / sonatypeTimeoutMillis := 3 * 60 * 60 * 1000 // 3h, was 60min default
 
+// Explicit over inherited: sbt-ci-release 1.11.x already defaults to the
+// Sonatype Central Portal (proven — both 0.2.x deployments landed there),
+// but pin it so a future plugin-default change can't silently reroute us.
+// The legacy hosts (oss.sonatype.org / s01) are retired.
+ThisBuild / sonatypeCredentialHost := xerial.sbt.Sonatype.sonatypeCentralHost
+
 ThisBuild / scalacOptions ++= Seq(
   "-deprecation",
   "-feature",
