@@ -1,6 +1,7 @@
 package dev.sdp.plugin
 
-import java.util.concurrent.{Executors, TimeUnit}
+import java.util.concurrent.{Executors, ThreadFactory, TimeUnit}
+import java.util.concurrent.atomic.AtomicInteger
 
 import dev.sdp.app.{GraphValidation, ManifestAssembly}
 import dev.sdp.core.{GraphFragment, PipelineManifest, PipelineValidationError}
@@ -17,6 +18,9 @@ import zio.*
   *   2. Build a task-scoped runtime on an isolated executor and tear both
   *      down in `finally`, so every invocation leaves the JVM exactly as it
   *      found it.
+  *
+  * And one learned here (P3.2): *isolated* must not mean *shared between the
+  * async and blocking executors*. See [[run]].
   */
 private[plugin] object SdpZioBridge:
 
@@ -39,12 +43,21 @@ private[plugin] object SdpZioBridge:
     * a defect deserves).
     */
   def run[E, A](effect: IO[E, A]): Either[E, A] =
-    val pool = Executors.newFixedThreadPool(2)
+    // TWO executors, not one (P3.2). A single fixed pool served as both the
+    // async and the blocking executor, which is a latent deadlock: every
+    // Spark Connect pull is `attemptBlockingInterrupt`, so two of them park
+    // both threads and the fiber that would complete them — the drain-vs-cancel
+    // race's timer continuation, the `.tap` that logs an event — has nowhere
+    // left to run. Splitting is the whole fix: the async executor stays small
+    // and is never allowed to block, while blocking work gets a pool that
+    // GROWS (cached) so parking N threads can never starve the runtime.
+    val async    = Executors.newFixedThreadPool(AsyncThreads, daemonThreads("sdp-zio-async"))
+    val blocking = Executors.newCachedThreadPool(daemonThreads("sdp-zio-blocking"))
     try
       val isolated = Unsafe.unsafe { implicit u =>
         Runtime.unsafe.fromLayer(
-          Runtime.setExecutor(Executor.fromJavaExecutor(pool)) ++
-            Runtime.setBlockingExecutor(Executor.fromJavaExecutor(pool))
+          Runtime.setExecutor(Executor.fromJavaExecutor(async)) ++
+            Runtime.setBlockingExecutor(Executor.fromJavaExecutor(blocking))
         )
       }
       try
@@ -53,10 +66,31 @@ private[plugin] object SdpZioBridge:
         }
       finally Unsafe.unsafe { implicit u => isolated.unsafe.shutdown() }
     finally
-      // Forceful + bounded teardown: `isolated.shutdown()` interrupts the
-      // fibers and runs the scoped finalizers (gRPC `channel.shutdownNow()`),
-      // so the pool threads are idle by now. `shutdownNow()` + a bounded await
-      // guarantees they're actually gone before the task returns — a warm sbt
-      // server never accrues our threads, even if a blocking call straggled.
-      pool.shutdownNow()
-      val _ = pool.awaitTermination(10, TimeUnit.SECONDS)
+      // Forceful + bounded teardown, BOTH pools: `isolated.shutdown()`
+      // interrupts the fibers and runs the scoped finalizers (gRPC
+      // `channel.shutdownNow()`), so the threads are idle by now.
+      // `shutdownNow()` first on both, THEN the awaits, so the two bounded
+      // waits overlap instead of summing. A warm sbt server never accrues our
+      // threads, even if a blocking call straggled.
+      val _ = async.shutdownNow()
+      val _ = blocking.shutdownNow()
+      val _ = async.awaitTermination(TeardownSeconds, TimeUnit.SECONDS)
+      val _ = blocking.awaitTermination(TeardownSeconds, TimeUnit.SECONDS)
+
+  /** The async executor only ever runs fiber steps, never a blocking call, so
+    * it stays deliberately tiny — the point of the isolated runtime is a
+    * minimal, disposable footprint inside a long-lived sbt server. Size is not
+    * what fixes the deadlock; the split is. */
+  private final val AsyncThreads = 2
+
+  /** Bounded wait per pool — see the teardown comment in [[run]]. */
+  private final val TeardownSeconds = 10L
+
+  /** Named daemon threads: named so a thread dump in a warm sbt server says
+    * whose they are, daemon so a straggler can never keep the JVM alive. */
+  private def daemonThreads(prefix: String): ThreadFactory =
+    val counter = new AtomicInteger(0)
+    (r: Runnable) =>
+      val t = new Thread(r, s"$prefix-${counter.incrementAndGet()}")
+      t.setDaemon(true)
+      t
