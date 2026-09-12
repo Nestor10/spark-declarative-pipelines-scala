@@ -48,6 +48,12 @@ import zio.*
   *                             calls; the run stream is bounded instead by
   *                             `SDP_RUN_TIMEOUT`.
   *   - `SDP_RUN_TIMEOUT`       seconds to wait for a run before detaching.
+  *   - `SDP_SKIP_VERSION_CHECK` `true` to skip the server-version handshake
+  *                             (default: the check runs). The handshake asks the
+  *                             server which Spark it is and refuses constructs
+  *                             newer than it; skipping logs a warning, because
+  *                             proto3 drops unknown fields and an old server
+  *                             then fails confusingly instead of cleanly.
   *
   * `validate` and `manifest` are offline and run with NO env vars set.
   */
@@ -86,6 +92,10 @@ trait SdpApp extends ZIOAppDefault:
   private val TokenVar    = "SDP_CONNECT_TOKEN"
   private val DeadlineVar = "SDP_CONNECT_DEADLINE"
   private val RunTimeoutVar = "SDP_RUN_TIMEOUT"
+  // The escape hatch for the server-version handshake. Spelled as SKIP (not
+  // ENABLE) so the safe behaviour is what you get by doing nothing, and turning
+  // it off is a visible, deliberate word in a deployment manifest.
+  private val SkipVersionCheckVar = "SDP_SKIP_VERSION_CHECK"
 
   private val DefaultEndpoint = "sc://localhost:15002"
 
@@ -119,6 +129,10 @@ trait SdpApp extends ZIOAppDefault:
       runTimeout <- ZIO.fromEither(
         SdpCommands.parsePositiveSeconds(RunTimeoutVar, runTimeoutRaw, default = 600L)
       )
+      skipRaw <- env(SkipVersionCheckVar)
+      skipVersionCheck <- ZIO.fromEither(
+        SdpCommands.parseFlag(SkipVersionCheckVar, skipRaw, default = false)
+      )
     yield SdpCommands.RunConfig(
       host,
       port,
@@ -127,6 +141,7 @@ trait SdpApp extends ZIOAppDefault:
       defaultDatabase,
       transport,
       runTimeout,
+      versionCheck = !skipVersionCheck,
     )
 
   /** Read one environment variable (12factor: config from env). Goes through
@@ -178,10 +193,11 @@ trait SdpApp extends ZIOAppDefault:
       verb    = if dry then "validating" else "running"
       mode    = if config.transport.useTls then "tls" else "plaintext"
       auth    = if config.transport.token.isDefined then ", bearer token" else ""
+      check   = if config.versionCheck then "" else ", version check SKIPPED"
       _ <- Console
         .printLine(
           s"sdp: $verb pipeline on sc://${config.host}:${config.port} " +
-            s"($mode$auth, dry=$dry, storage=${config.storage})"
+            s"($mode$auth$check, dry=$dry, storage=${config.storage})"
         )
         .orDie
       outcome <- SdpCommands.run(pipeline, config, dry)
@@ -242,6 +258,10 @@ trait SdpApp extends ZIOAppDefault:
            |                          (default ${TransportConfig.DefaultDeadlineSeconds}).
            |  $RunTimeoutVar         Seconds to wait for a run before detaching
            |                          (default 600).
+           |  $SkipVersionCheckVar
+           |                          true to skip the server-version handshake
+           |                          (default: it runs, and refuses constructs
+           |                          newer than the server).
            |
            |validate and manifest are offline and need no environment.""".stripMargin
       )

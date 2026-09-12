@@ -56,6 +56,7 @@ write the pipeline object.
 | `sdpDefaultCatalog` | setting | Graph default catalog sent in `CreateDataflowGraph` (`""` = omit). Send it on named V2 catalogs — omission can silently drop dependency edges |
 | `sdpDefaultDatabase` | setting | Graph default database — the dev/prod switch (see "Environments" below; `""` = omit) |
 | `sdpPushDryRun` | setting | `true` (default): `sdpPush` validates only, no flows execute; `false`: `sdpPush` really runs. (`sdpDryRun` always runs dry; `sdpRun` always runs for real.) |
+| `sdpVersionCheck` | setting | `true` (default): ask the server which Spark it is before registering, and refuse constructs newer than it — see "Server-version handshake" below |
 | `sdpImportSchemas` | task | Generate named-tuple schema aliases (for `cols[S]`) from the pipeline's inferred shapes + remote catalog tables |
 | `sdpSchemasFile` | setting | Output for generated aliases (default `src/main/scala/sdp/schemas/PipelineSchemas.scala` — checked in, diffs reviewable) |
 | `sdpSchemasPackage` | setting | Package of the generated aliases (default `sdp.schemas`) |
@@ -63,8 +64,57 @@ write the pipeline object.
 
 > **AUTO CDC (Spark 4.2, gated):** `sdpValidate` / `sdpManifest` fully support
 > pipelines containing `createAutoCdcFlow` today (offline). `sdpRun` /
-> `sdpDryRun` fail with a clear error on such a pipeline until the wire client
-> bumps to `spark-connect-common >= 4.2.0` — see `docs/dsl.md`.
+> `sdpDryRun` fail with a clear error on such a pipeline because this build does
+> not emit `AutoCdcFlowDetails` on the wire yet — see `docs/dsl.md`.
+
+## Server-version handshake
+
+Every task that talks to a server (`sdpDryRun`, `sdpRun`, `sdpPush`, `sdpWatch`,
+and `SdpApp run` off sbt) asks it one question first — a single
+`AnalyzePlan`/`SparkVersion` round trip on the same channel the registration
+uses — and logs the answer:
+
+```
+[info] server reports Spark 4.1.2
+```
+
+Then, **before** `CreateDataflowGraph`, it checks the pipeline's constructs
+against that version. Today there is exactly one requirement: an **AUTO CDC**
+flow needs a **Spark 4.2+** server. A too-old server is refused with a sentence,
+and nothing is registered:
+
+```
+sdp: registration failed — Spark Connect server is too old for this pipeline:
+AUTO CDC flow (SCD type 1) 'orders_cdc' (target 'dim_customers') needs a
+Spark 4.2+ server; sc://localhost:15002 reports 4.1.2
+```
+
+Why a handshake at all, rather than letting the server complain? Because proto3
+**silently drops unknown fields**. A 4.2-only message sent to a 4.1 server does
+not arrive as "unsupported" — it arrives as a `DefineFlow` with no details, and
+the server reports something confusing (or accepts a half-message). The
+handshake turns that into one actionable line.
+
+Deliberate asymmetries:
+
+- **Version parsing is lenient**: only `major.minor` is read, from the front of
+  the string, so `4.1.1`, `4.2.0-preview1` and vendor spellings like
+  `4.1.0-amzn-0` all resolve.
+- **An unreadable version never blocks.** If the server reports something this
+  client cannot parse — or the probe itself fails — you get a warning and the run
+  proceeds. Forks report odd strings, and a client that refuses to run against an
+  unrecognised version is worse than one that tries.
+- `sdpValidate` and `sdpManifest` are **offline** and never perform the
+  handshake.
+
+Escape hatch, should a server's version string ever be read wrongly:
+
+```scala
+sdpVersionCheck := false    // sbt; SDP_SKIP_VERSION_CHECK=true for SdpApp
+```
+
+Skipping logs a warning — it removes the only thing standing between a newer
+construct and an older server.
 
 ## The inner loop — `~sdpValidate` / `~sdpDryRun`
 

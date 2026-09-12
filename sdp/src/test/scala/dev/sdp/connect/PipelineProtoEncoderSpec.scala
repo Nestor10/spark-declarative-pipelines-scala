@@ -163,9 +163,12 @@ object PipelineProtoEncoderSpec extends ZIOSpecDefault:
         try { PipelineProtoEncoder.definitions(graphId, cdcManifest); None }
         catch { case e: UnsupportedWireFeature => Some(e.getMessage) }
       assertTrue(
-        thrown.exists(_.contains("spark-connect-common >= 4.2.0")),
+        thrown.exists(_.contains("not encoded on the wire yet")),
         thrown.exists(_.contains("dim_auto_cdc")),
-        thrown.exists(_.contains("validate/manifest work")),
+        thrown.exists(_.contains("validate/manifest work offline")),
+        // The message must describe the REAL pin (4.2.0), not the 4.1.2 era.
+        thrown.exists(_.contains("4.2.0")),
+        thrown.forall(!_.contains("pins 4.1.2")),
       )
     },
     test("a once=true WriteRelation flow encodes DefineFlow.once on the wire") {

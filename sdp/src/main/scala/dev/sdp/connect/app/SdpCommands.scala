@@ -35,6 +35,11 @@ object SdpCommands:
         * inside it; an unbounded source hits it and detaches cleanly instead
         * of wedging the process. */
       runTimeoutSeconds: Long = 600L,
+      /** Whether to run the server-version handshake before registering
+        * (`dev.sdp.connect.VersionGate`). ON by default: it is the only thing
+        * standing between a 4.2-only construct and a 4.1 server that would
+        * silently drop it. `SDP_SKIP_VERSION_CHECK=true` turns it off. */
+      versionCheck: Boolean = true,
   )
 
   /** Expected, renderable failures of a subcommand. */
@@ -89,6 +94,21 @@ object SdpCommands:
             Left(
               CommandError.BadConfig(s"$envVar must be a positive number of seconds, got '$value'")
             )
+
+  /** A boolean flag from a raw config value: `true/1/yes/on` vs
+    * `false/0/no/off`, any case; unset/empty keeps `default`. Pure and total —
+    * a bad value is a `BadConfig` naming the variable, never a throw. */
+  def parseFlag(
+      envVar: String,
+      raw: Option[String],
+      default: Boolean,
+  ): Either[CommandError, Boolean] =
+    raw.map(_.trim.toLowerCase).filter(_.nonEmpty) match
+      case None                                  => Right(default)
+      case Some("true" | "1" | "yes" | "on")      => Right(true)
+      case Some("false" | "0" | "no" | "off")     => Right(false)
+      case Some(other) =>
+        Left(CommandError.BadConfig(s"$envVar must be true or false, got '$other'"))
 
   /** Assemble + validate the fragments into the canonical manifest. The
     * EXPECTED failure (a cycle, dangling read, unknown column, ...) surfaces
@@ -146,6 +166,7 @@ object SdpCommands:
               defaultCatalog = config.defaultCatalog,
               defaultDatabase = config.defaultDatabase,
               transport = config.transport,
+              versionCheck = config.versionCheck,
             )
             .flatMap { handle =>
               val drain = handle.progress

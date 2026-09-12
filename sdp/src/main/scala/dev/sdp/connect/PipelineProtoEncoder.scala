@@ -3,11 +3,12 @@ package dev.sdp.connect
 import dev.sdp.core.{FlowDetails, PipelineManifest, PipelineNode}
 import org.apache.spark.connect.proto as sc
 
-/** Thrown when the manifest carries a construct the pinned wire client cannot
-  * encode. AUTO CDC (`AutoCdcFlowDetails`) only exists in the Spark 4.2+
-  * `pipelines.proto`; this build pins `spark-connect-common 4.1.2`, whose
-  * generated classes have no such message. `validate`/`manifest` work offline
-  * today; `run`/`dry-run` cannot register such a flow until the dep bumps. */
+/** Thrown when the manifest carries a construct this encoder does not emit on
+  * the wire yet. Today that is AUTO CDC: `AutoCdcFlowDetails` *is* present in
+  * the pinned `spark-connect-common 4.2.0`, but the encode is not implemented
+  * (roadmap S1 turns it on; [[VersionGate]] then guards the server side, since
+  * a 4.1 server would silently drop the message). `validate`/`manifest` accept
+  * such a pipeline offline; `run`/`dry-run` refuse it here, readably. */
 final class UnsupportedWireFeature(message: String) extends RuntimeException(message)
 
 /** Pure translation from the canonical [[PipelineManifest]] to the Spark
@@ -237,15 +238,16 @@ object PipelineProtoEncoder:
     if once then { val _ = flow.setOnce(true) }
     sc.PipelineCommand.newBuilder().setDefineFlow(flow).build()
 
-  /** AUTO CDC flow → the wire. **Gated**: the pinned `spark-connect-common
-    * 4.1.2` artifact has no `AutoCdcFlowDetails` message, so we cannot build the
-    * `DefineFlow.auto_cdc_flow_details` oneof branch. Fail loud with a readable,
-    * typed error rather than silently dropping the flow — `validate`/`manifest`
-    * already accepted it offline, so the user only hits this at `run`/`dry-run`.
+  /** AUTO CDC flow → the wire. **Gated**: the `DefineFlow.auto_cdc_flow_details`
+    * oneof branch exists in the pinned `spark-connect-common 4.2.0`, but this
+    * build does not emit it yet. Fail loud with a readable, typed error rather
+    * than silently dropping the flow — `validate`/`manifest` already accepted it
+    * offline, so the user only hits this at `run`/`dry-run`.
     *
-    * GATE(spark-4.2): when the dep bumps to `spark-connect-common >= 4.2.0`,
-    * delete the throw and emit the oneof branch. From `pipelines.proto`
-    * v4.2.0-rc1 (`AutoCdcFlowDetails`, field numbers noted in [[FlowDetails]]):
+    * GATE(spark-4.2) — roadmap S1: delete the throw and emit the oneof branch
+    * below; server-side safety is then the [[VersionGate]] handshake's job (a
+    * 4.1 server must be refused, not sent a message proto3 will strip). From
+    * `pipelines.proto` (`AutoCdcFlowDetails`, field numbers per [[FlowDetails]]):
     * {{{
     *   val cdc = flow.details.asInstanceOf[FlowDetails.AutoCdc]
     *   val ac  = sc.PipelineCommand.DefineFlow.AutoCdcFlowDetails.newBuilder()
@@ -269,9 +271,9 @@ object PipelineProtoEncoder:
     */
   private def autoCdcFlowCommand(graphId: String, flow: dev.sdp.core.Flow): sc.PipelineCommand =
     throw new UnsupportedWireFeature(
-      s"AUTO CDC flow '${flow.name}' (target '${flow.target}') requires a Spark 4.2+ wire client " +
-        "(spark-connect-common >= 4.2.0); this build pins 4.1.2 — validate/manifest work, " +
-        "run/dry-run cannot register this flow yet."
+      s"AUTO CDC flow '${flow.name}' (target '${flow.target}') is not encoded on the wire yet. " +
+        "The pinned spark-connect-common 4.2.0 carries AutoCdcFlowDetails, but this build does " +
+        "not emit it — validate/manifest work offline, run/dry-run cannot register this flow."
     )
 
   private def readRelation(upstream: String, streaming: Boolean): sc.Relation =

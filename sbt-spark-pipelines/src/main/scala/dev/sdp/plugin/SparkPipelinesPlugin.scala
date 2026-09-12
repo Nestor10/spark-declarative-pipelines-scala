@@ -72,6 +72,12 @@ object SparkPipelinesPlugin extends AutoPlugin {
       "When true (default), sdpPush only validates server-side; no flows execute. (The dedicated " +
         "`sdpDryRun` task always runs dry regardless of this setting; `sdpRun` always runs for real.)"
     )
+    val sdpVersionCheck = settingKey[Boolean](
+      "When true (the default), sdpDryRun/sdpRun/sdpPush/sdpWatch ask the server which Spark it " +
+        "is before registering anything, and refuse a pipeline that uses constructs newer than " +
+        "the server (proto3 drops unknown fields, so an old server would otherwise fail " +
+        "confusingly). Set false only for a fork whose version string we read wrongly."
+    )
     val sdpRunTimeout = settingKey[Int](
       "Max seconds to wait for a run before detaching. Batch/terminating streaming runs " +
         "finish well under this; a never-terminating streaming source (e.g. rate) hits it and " +
@@ -201,6 +207,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
         defaultCatalog = sdpDefaultCatalog.value,
         defaultDatabase = sdpDefaultDatabase.value,
         transport = transportConfig(sdpConnectUseTls.value, sdpConnectToken.value, sdpConnectDeadline.value),
+        versionCheck = sdpVersionCheck.value,
       )
     },
 
@@ -221,6 +228,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
         defaultCatalog = sdpDefaultCatalog.value,
         defaultDatabase = sdpDefaultDatabase.value,
         transport = transportConfig(sdpConnectUseTls.value, sdpConnectToken.value, sdpConnectDeadline.value),
+        versionCheck = sdpVersionCheck.value,
       )
     },
 
@@ -252,6 +260,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
         defaultCatalog = sdpDefaultCatalog.value,
         defaultDatabase = sdpDefaultDatabase.value,
         transport = transportConfig(sdpConnectUseTls.value, sdpConnectToken.value, sdpConnectDeadline.value),
+        versionCheck = sdpVersionCheck.value,
       )
     },
 
@@ -266,6 +275,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
         defaultCatalog = sdpDefaultCatalog.value,
         defaultDatabase = sdpDefaultDatabase.value,
         transport = transportConfig(sdpConnectUseTls.value, sdpConnectToken.value, sdpConnectDeadline.value),
+        versionCheck = sdpVersionCheck.value,
       )
     },
 
@@ -275,6 +285,9 @@ object SparkPipelinesPlugin extends AutoPlugin {
     sdpConnectUseTls   := false,
     sdpConnectToken    := sys.env.getOrElse("SDP_CONNECT_TOKEN", ""),
     sdpConnectDeadline := 60,
+    // The handshake is ON by default: the inner loop is exactly where someone
+    // points a 4.2-capable client at the 4.1 container they already had running.
+    sdpVersionCheck := true,
 
     sdpStorageRoot   := s"file:///tmp/sdp/${name.value}",
     sdpPushDryRun    := true,
@@ -503,6 +516,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
       defaultCatalog: String = "",
       defaultDatabase: String = "",
       transport: TransportConfig = TransportConfig.plaintext,
+      versionCheck: Boolean = true,
   ): Unit =
     val manifestPath = conv.toPath(manifestRef)
     val manifestText = new String(Files.readAllBytes(manifestPath), UTF_8)
@@ -531,6 +545,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
           defaultCatalog = Some(defaultCatalog).filter(_.nonEmpty),
           defaultDatabase = Some(defaultDatabase).filter(_.nonEmpty),
           transport = transport,
+          versionCheck = versionCheck,
         )
         .flatMap { handle =>
         val drain = handle.progress
@@ -571,6 +586,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
       defaultCatalog: String = "",
       defaultDatabase: String = "",
       transport: TransportConfig = TransportConfig.plaintext,
+      versionCheck: Boolean = true,
   ): Unit =
     val manifestPath = conv.toPath(manifestRef)
     val manifestText = new String(Files.readAllBytes(manifestPath), UTF_8)
@@ -595,6 +611,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
           defaultCatalog = Some(defaultCatalog).filter(_.nonEmpty),
           defaultDatabase = Some(defaultDatabase).filter(_.nonEmpty),
           transport = transport,
+          versionCheck = versionCheck,
         )
         .flatMap { handle =>
         handle.progress

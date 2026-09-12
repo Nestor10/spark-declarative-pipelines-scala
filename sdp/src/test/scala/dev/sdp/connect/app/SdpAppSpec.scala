@@ -193,6 +193,80 @@ object SdpAppSpec extends ZIOSpecDefault:
           SdpCommands.parsePositiveSeconds("SDP_RUN_TIMEOUT", Some("0"), 600L).isLeft,
         )
       },
+      test("SDP_SKIP_VERSION_CHECK defaults to off and accepts the usual spellings") {
+        assertTrue(
+          // Doing nothing leaves the handshake ON — the safe default.
+          SdpCommands.parseFlag("SDP_SKIP_VERSION_CHECK", None, default = false) == Right(false),
+          SdpCommands.parseFlag("SDP_SKIP_VERSION_CHECK", Some(""), default = false) == Right(false),
+          SdpCommands.parseFlag("SDP_SKIP_VERSION_CHECK", Some("true"), false) == Right(true),
+          SdpCommands.parseFlag("SDP_SKIP_VERSION_CHECK", Some(" TRUE "), false) == Right(true),
+          SdpCommands.parseFlag("SDP_SKIP_VERSION_CHECK", Some("1"), false) == Right(true),
+          SdpCommands.parseFlag("SDP_SKIP_VERSION_CHECK", Some("yes"), false) == Right(true),
+          SdpCommands.parseFlag("SDP_SKIP_VERSION_CHECK", Some("off"), false) == Right(false),
+          // A typo is a config error, never silently "don't skip" — the operator
+          // who wrote it meant something.
+          SdpCommands
+            .parseFlag("SDP_SKIP_VERSION_CHECK", Some("ja"), false)
+            .left
+            .map(_.render) ==
+            Left("sdp: SDP_SKIP_VERSION_CHECK must be true or false, got 'ja'"),
+        )
+      },
+      test("a malformed SDP_SKIP_VERSION_CHECK renders one line + usage, exits 1") {
+        for
+          _    <- TestSystem.putEnv("SDP_SKIP_VERSION_CHECK", "sometimes")
+          code <- TestApp.dispatch(List("run", "--dry"))
+          err  <- TestConsole.outputErr
+          out  <- TestConsole.output
+        yield assertTrue(
+          code == ExitCode.failure,
+          err.mkString.contains("SDP_SKIP_VERSION_CHECK must be true or false, got 'sometimes'"),
+          out.mkString.contains("Usage:"),
+        )
+      },
+      test("the version check is on by default in a RunConfig, and skipping is visible") {
+        val default = SdpCommands.RunConfig("h", 15002, "file:///tmp/x")
+        assertTrue(
+          default.versionCheck,
+          default.copy(versionCheck = false).versionCheck == false,
+        )
+      },
+      test("a too-old server renders as one readable runner line, not a trace") {
+        // The whole point of routing the handshake verdict through the existing
+        // typed channel: the author sees the same `sdp: …` shape as any other
+        // expected failure.
+        val manifest = PipelineManifest.fromGraphAndFlows(
+          PipelineGraph(Map("dim" -> PipelineNode.StreamingTable("dim", "delta")), Set.empty),
+          List(
+            Flow(
+              "dim_auto_cdc",
+              "dim",
+              FlowDetails.AutoCdc(
+                "bronze.cdc",
+                List(dev.sdp.core.algebra.Ex.Col("id")),
+                dev.sdp.core.algebra.Ex.Col("seq"),
+              ),
+            )
+          ),
+        )
+        val rendered = dev.sdp.connect.VersionGate
+          .check("4.1.1", manifest, "sc://localhost:15002") match
+          case Left(err) => SdpCommands.CommandError.Registration(err).render
+          case Right(_)  => "UNEXPECTED: accepted"
+        assertTrue(
+          rendered ==
+            "sdp: registration failed — Spark Connect server is too old for this pipeline: " +
+            "AUTO CDC flow (SCD type 1) 'dim_auto_cdc' (target 'dim') needs a Spark 4.2+ server; " +
+            "sc://localhost:15002 reports 4.1.1",
+          rendered.linesIterator.size == 1,
+        )
+      },
+      test("the usage text documents the handshake escape hatch") {
+        for
+          _   <- TestApp.dispatch(List("--help"))
+          out <- TestConsole.output
+        yield assertTrue(out.mkString.contains("SDP_SKIP_VERSION_CHECK"))
+      },
       test("a malformed endpoint is a typed BadConfig, not a defect") {
         assertTrue(
           SdpCommands.parseEndpoint("SDP_CONNECT_ENDPOINT", "sc://localhost:15002") ==

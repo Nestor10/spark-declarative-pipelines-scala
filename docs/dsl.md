@@ -155,15 +155,20 @@ becomes a read (lineage edge) of the flow, so a missing source is caught by
 the dangling-dependency validator. Validation also enforces that the target is
 a declared **streaming table** and that `keys` is non-empty.
 
-**Gated at the wire.** Our wire client pins `spark-connect-common 4.1.2`,
-which has no `AutoCdcFlowDetails` message. So `sdpValidate` / `sdpManifest`
-(offline, deterministic) fully support AUTO CDC *today* — the domain, codec,
-and validation all work — but `sdpRun` / `sdpDryRun` (and `SdpApp run`) fail
-with a clear error until the dep bumps to `spark-connect-common >= 4.2.0`:
+**Gated at the wire.** The pinned `spark-connect-common 4.2.0` *does* carry
+`AutoCdcFlowDetails`, but this build does not emit it yet. So `sdpValidate` /
+`sdpManifest` (offline, deterministic) fully support AUTO CDC *today* — the
+domain, codec, and validation all work — but `sdpRun` / `sdpDryRun` (and
+`SdpApp run`) fail with a clear error:
 
-> AUTO CDC flow '…' requires a Spark 4.2+ wire client
-> (spark-connect-common >= 4.2.0); this build pins 4.1.2 — validate/manifest
-> work, run/dry-run cannot register this flow yet.
+> AUTO CDC flow '…' is not encoded on the wire yet. The pinned
+> spark-connect-common 4.2.0 carries AutoCdcFlowDetails, but this build does not
+> emit it — validate/manifest work offline, run/dry-run cannot register this flow.
+
+When the encode is turned on, the **server**-side safety net is the
+[version handshake](plugin.md#server-version-handshake): AUTO CDC requires a
+Spark 4.2+ server, and a 4.1 server is refused before registration rather than
+being sent a message proto3 would silently strip.
 
 The manifest header bumps to `sdp-manifest/3` when a pipeline contains an AUTO
 CDC flow (or a `once` flow, below); pipelines without these constructs still

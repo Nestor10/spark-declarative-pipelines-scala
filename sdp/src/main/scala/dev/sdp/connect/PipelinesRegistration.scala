@@ -36,10 +36,18 @@ object PipelinesRegistration:
       * defect trace. */
     case UnsupportedWire(detail: String)
 
+    /** The server is older than a construct the pipeline uses — caught by the
+      * [[VersionGate]] handshake BEFORE anything is registered, because proto3
+      * drops unknown fields and an old server would otherwise fail
+      * confusingly (or silently misbehave). Expected and renderable: the author
+      * reads which flow, which version, which endpoint. */
+    case ServerTooOld(detail: String)
+
     def describe: String = this match
       case TransportFailure(d) => s"Spark Connect transport failure: $d"
       case ServerRejected(d)   => s"Spark Connect server rejected the pipeline: $d"
       case UnsupportedWire(d)  => s"unsupported by the pinned Spark Connect wire client: $d"
+      case ServerTooOld(d)     => s"Spark Connect server is too old for this pipeline: $d"
 
   /** A registered graph plus its run as a **stream** of progress events.
     *
@@ -85,12 +93,20 @@ object PipelinesRegistration:
       // Transport security + per-RPC deadline. Defaults to plaintext/anonymous:
       // sc://localhost is the dev container and must keep working untouched.
       transport: TransportConfig = TransportConfig.plaintext,
+      // The server-version handshake (VersionGate). ON by default; the escape
+      // hatch (SDP_SKIP_VERSION_CHECK / sdpVersionCheck := false) exists for a
+      // fork that reports a version we would read wrongly.
+      versionCheck: Boolean = true,
   ): ZIO[Scope, RegistrationError, RunHandle] =
     ConnectChannel.scoped(host, port, transport).flatMap { ch =>
       val stub      = sc.SparkConnectServiceGrpc.newBlockingStub(ch)
       val sessionId = UUID.randomUUID().toString
 
       for
+        // Handshake FIRST: ask what the server is, and refuse before a single
+        // dataset is registered if the pipeline needs a newer wire than it
+        // speaks. Nothing is created server-side when this fails.
+        _ <- handshake(stub, sessionId, transport, manifest, s"sc://$host:$port", versionCheck)
         created <- execute(
                      stub,
                      sessionId,
@@ -122,6 +138,54 @@ object PipelinesRegistration:
         cancel = ZIO.succeed { ch.shutdownNow(); () },
       )
     }
+
+  /** The server-version handshake: one `AnalyzePlan`/`SparkVersion` round trip,
+    * then the pure [[VersionGate]].
+    *
+    * Three outcomes, all deliberate:
+    *   - **recognised and new enough** — log `server reports Spark X.Y.Z` at
+    *     info and continue (every registration says which server it talked to;
+    *     half the confusing bug reports in this project's history were "which
+    *     server was that?");
+    *   - **recognised and too old** — fail in the typed channel, before
+    *     `CreateDataflowGraph`, so nothing is half-registered;
+    *   - **unrecognised, or the probe itself failed** — warn and PROCEED. A
+    *     fork reporting an odd string must not be blocked by us, and a real
+    *     transport problem is about to be reported much better by the next RPC.
+    *
+    * `versionCheck = false` skips the round trip entirely and says so.
+    */
+  private def handshake(
+      stub: sc.SparkConnectServiceGrpc.SparkConnectServiceBlockingStub,
+      sessionId: String,
+      transport: TransportConfig,
+      manifest: PipelineManifest,
+      endpoint: String,
+      versionCheck: Boolean,
+  ): IO[RegistrationError, Unit] =
+    if !versionCheck then
+      ZIO.logWarning(
+        s"server-version check DISABLED for $endpoint — a construct newer than the server " +
+          "will fail confusingly or silently misbehave (proto3 drops unknown fields)"
+      )
+    else
+      PlanAnalysis.sparkVersionOn(stub, sessionId, transport).either.flatMap {
+        case Left(err) =>
+          ZIO.logWarning(
+            s"could not resolve the Spark version of $endpoint (${err.describe}) — " +
+              "proceeding without the version check"
+          )
+        case Right(reported) =>
+          val recognised = VersionGate.ServerVersion.parse(reported)
+          val announce =
+            if recognised.isDefined then ZIO.logInfo(s"server reports Spark $reported")
+            else
+              ZIO.logWarning(
+                s"server reports Spark '$reported', which this client cannot read as a version — " +
+                  "proceeding without the version check"
+              )
+          announce *> ZIO.fromEither(VersionGate.check(reported, manifest, endpoint))
+      }
 
   /** The `StartRun` server-stream as a `ZStream` of parsed progress events.
     *
