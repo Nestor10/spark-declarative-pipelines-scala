@@ -39,13 +39,13 @@ ThisBuild / scalaVersion := "3.9.0"
 // `publishSettings` below; the root aggregate sets `publish / skip`.
 // ---------------------------------------------------------------------
 ThisBuild / versionScheme := Some("early-semver")
-ThisBuild / homepage      := Some(uri("https://github.com/Nestor10/spark-declarative-pipelines-scala").toURL)
+ThisBuild / homepage      := Some(uri("https://github.com/Nestor10/spark-declarative-pipelines-scala"))
 ThisBuild / licenses      := Seq(
-  "Apache-2.0" -> uri("https://www.apache.org/licenses/LICENSE-2.0").toURL
+  "Apache-2.0" -> uri("https://www.apache.org/licenses/LICENSE-2.0")
 )
 ThisBuild / scmInfo := Some(
   ScmInfo(
-    uri("https://github.com/Nestor10/spark-declarative-pipelines-scala").toURL,
+    uri("https://github.com/Nestor10/spark-declarative-pipelines-scala"),
     "scm:git:git@github.com:Nestor10/spark-declarative-pipelines-scala.git",
   )
 )
@@ -54,7 +54,7 @@ ThisBuild / developers := List(
     id = "Nestor10",
     name = "Eric Smith",
     email = "ericsmith.lpi@gmail.com",
-    url = uri("https://github.com/Nestor10").toURL,
+    url = uri("https://github.com/Nestor10"),
   )
 )
 
