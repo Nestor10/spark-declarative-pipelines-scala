@@ -430,6 +430,34 @@ object RelCodecPropertySpec extends ZIOSpecDefault:
         )
       }
     },
+    test("law: the fragment marker is present, and the pre-marker body still parses") {
+      // P3.1: render carries `sdp-fragment/N`; parse accepts it (branch a) and
+      // accepts a header-less body from sdp <= 0.2.1 (branch c) — for EVERY
+      // fragment, not just the hand-written one in GraphFragmentSpec.
+      check(
+        Gen.listOfBounded(0, 3)(nodeGen),
+        Gen.listOfBounded(0, 3)(for a <- hostile; b <- hostile yield (a, b)),
+        Gen.listOfBounded(0, 2)(for n <- hostile; r <- trees yield (n, r)),
+      ) { (nodes, edges, flows) =>
+        val fragment = GraphFragment(
+          nodes,
+          edges.map((f, t) => DependencyEdge(f, t)).toSet,
+          flows.map((n, r) => Flow(n, n, r)),
+        )
+        val rendered  = GraphFragment.render(fragment)
+        val body      = rendered.linesIterator.drop(1).mkString("\n")
+        val marked    = GraphFragment.parse(rendered)
+        val unmarked  = GraphFragment.parse(body)
+        val fromNewer = GraphFragment.parse(s"sdp-fragment/${GraphFragment.FormatVersion + 1}\n$body")
+        assertTrue(
+          rendered.linesIterator.next() == s"sdp-fragment/${GraphFragment.FormatVersion}",
+          marked.map(_.nodes.sortBy(_.id)) == Right(fragment.nodes.sortBy(_.id)),
+          marked.map(_.edges) == Right(fragment.edges),
+          unmarked == marked,
+          fromNewer.swap.exists(_.contains("newer sdp")),
+        )
+      }
+    },
     test("law: PipelineManifest.parse(m.render) == Right(m)") {
       check(Gen.listOfBounded(1, 3)(for n <- hostileName; r <- trees yield (n, r)), Gen.boolean) {
         (flows, once) =>

@@ -27,6 +27,12 @@ package dev.sdp.core
   *
   * Round-trips through [[GraphFragment.parse]]: `parse(render(f)) == Right(f)`
   * for any fragment (guarded by `PipelineExportSpec`).
+  *
+  * Each string leads with a `sdp-fragment/N` version header
+  * ([[GraphFragment.FormatVersion]]). The decoding side is a DIFFERENT copy of
+  * sdp from the encoding side — the plugin's, versus the one on the user's
+  * runtime classpath — so the marker is what lets a lockstep violation say
+  * which side is ahead instead of surfacing as a malformed line.
   */
 object PipelineExport:
 
