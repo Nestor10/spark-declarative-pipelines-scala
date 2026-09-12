@@ -100,7 +100,10 @@ the Declarative Pipelines surface enabled.
 - [Pipeline DSL](docs/dsl.md) — every combinator, typed columns, inline data,
   AUTO CDC, the manifest format, and the supported-Spark-surface statement.
 - [The sbt plugin](docs/plugin.md) — tasks and settings, the inner loop,
-  running for real, environments (dev/prod), TLS and tokens.
+  running for real, TLS and tokens.
+- [Environments & promotion](docs/environments.md) — typed `sdpTargets`,
+  `sdpRunOn dev` / `sdpDryRunOn prod`, and byte-identical manifest promotion
+  from a laptop to production.
 - [Developing](docs/developing.md) — contributor reference: test suites, the
   conformance/coverage matrix, local publishing, release discipline.
 

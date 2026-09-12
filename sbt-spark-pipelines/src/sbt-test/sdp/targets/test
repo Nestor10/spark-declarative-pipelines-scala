@@ -1,0 +1,57 @@
+# E4 scripted: environments & promotion.
+# No Spark server is involved — every endpoint declared in build.sbt is
+# deliberately dead. What is under test is the TARGET MODEL: that a bad target
+# name fails usefully, that a `*On` task really dials its target's endpoint, and
+# that the manifest is independent of the environment (the promotion property).
+
+# --- (a) addressing errors, before any network. The message TEXT is asserted in
+# the unit specs (SdpTargetSpec / TargetResolutionSpec); here we assert they
+# FAIL, which is what a build actually depends on.
+
+# an undeclared target name
+-> sdpRunOn nope
+-> sdpDryRunOn nope
+-> sdpSeedOn nope
+
+# no target name at all
+-> sdpDryRunOn
+
+# a target whose tokenEnv is not exported: refused at resolution, not at the socket
+-> sdpDryRunOn prod-secure
+
+# --- (b) the target's endpoint is the one actually dialled: the failure names
+# prod's endpoint and provenance, and never the flat setting's (which points at
+# a different dead endpoint, so this cannot pass by accident).
+> checkProdEndpointUsed
+
+# --- (c) THE PROMOTION PROPERTY — one manifest, every environment.
+> sdpManifest
+> manifestSnapshot
+
+# Registering against dev is a network failure (dead endpoint) — the manifest
+# behind it is the same artifact either way.
+-> sdpDryRunOn dev
+> sdpManifest
+> checkManifestIdentical
+
+# A completely different environment: other endpoint, other catalog, other
+# database, other storage root.
+-> sdpDryRunOn prod
+> sdpManifest
+> checkManifestIdentical
+
+# And now move the WHOLE build to a different environment — flat settings and
+# every target value — without touching a single pipeline source.
+$ copy-file extra/promoted-build.sbt build.sbt
+> reload
+> checkPromotedSettings
+> sdpManifest
+> checkManifestIdentical
+
+# The untargeted tasks still behave exactly as before (flat settings), and the
+# offline ones never touch a target at all — including after the environment
+# moved under them.
+> sdpValidate
+> sdpManifest
+> checkManifestIdentical
+-> sdpDryRun

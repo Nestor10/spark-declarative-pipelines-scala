@@ -47,6 +47,10 @@ write the pipeline object.
 | `sdpRun` | task | Register **and execute** the graph (dry = false, always) — materializes tables; one-shot run with progress |
 | `sdpWatch` | task | Re-trigger the pipeline every `sdpWatchInterval`s (Ctrl-C to stop) — client-side "continuous": each cycle is a triggered run whose AvailableNow resumes from the checkpoint and picks up new data (the server has no true continuous mode) |
 | `sdpSeed` | task | Run `sdpSeedStatements` (DDL/DML) against the server over Spark Connect — a local fixture to create + populate the source/catalog tables an `externalTable` reads, so a full run resolves them |
+| `sdpTargets` | setting | Named environments as typed `SdpTarget` values (`Map[String, SdpTarget]`, default empty) — see [environments.md](environments.md) |
+| `sdpRunOn <target>` | input task | `sdpRun` against a named environment from `sdpTargets` (tab-completes the names) |
+| `sdpDryRunOn <target>` | input task | `sdpDryRun` against a named environment — full Catalyst validation against *that* catalog, zero execution: the pre-merge gate |
+| `sdpSeedOn <target>` | input task | `sdpSeed` against a named environment |
 | `sdpSeedStatements` | setting | SQL statements `sdpSeed` executes (e.g. `CREATE OR REPLACE TABLE bronze.orders USING delta AS SELECT …`). Default empty |
 | `sdpConnectEndpoint` | setting | gRPC endpoint, `sc://host:port` (default `sc://localhost:15002`) |
 | `sdpConnectUseTls` | setting | `true` to speak TLS (default `false` = plaintext — `sc://localhost` is the dev container) |
@@ -255,6 +259,11 @@ container*, not the plugin):
   same `pipeline` value).
 - **Cache-clean.** The task participates in sbt 2.0's action cache: unchanged
   inputs replay from cache (`cache 100%`) with byte-identical output.
+- **Byte-identical promotion.** The manifest does not depend on the
+  environment. Registering against a different target — or repointing the whole
+  build at a different endpoint, catalog, database and storage root — leaves the
+  manifest's SHA-256 unchanged, so the artifact you validated in dev is the
+  artifact prod runs. See [environments.md](environments.md).
 - **Build-JVM hygiene.** The child classloader is closed per invocation and the
   ZIO runtime is task-scoped and torn down per invocation — safe for long-lived
   sbt servers. No ZIO runs inside the child loader; evaluation is plain code.
@@ -268,8 +277,13 @@ byte-stable (sorted entries, percent-encoded fields, no timestamps). See
 
 ## Environments: dev and prod targets
 
+**→ The full story, including the promotion chain, is
+[docs/environments.md](environments.md).**
+
 The dbt/DLT pattern translates directly: **code keeps unqualified dataset
-names; the environment decides where they land.**
+names; the environment decides where they land.** Two ways to say it.
+
+**Flat settings** — one implicit environment, wherever this build points:
 
 ```scala
 // build.sbt (local dev) — every managed table lands in dev_eric:
@@ -277,16 +291,43 @@ sdpDefaultCatalog  := "warehouse"
 sdpDefaultDatabase := "dev_eric"
 ```
 
+**Named targets** (`sdpTargets`) — several environments, addressed by name:
+
+```scala
+sdpTargets := Map(
+  "dev"  -> SdpTarget.userScopedDev("sc://localhost:15002", catalog = "warehouse"),
+  "prod" -> SdpTarget(
+    connectEndpoint = "sc://spark-connect.prod.svc:15002",
+    defaultCatalog  = Some("warehouse"),
+    defaultDatabase = Some("analytics"),
+    storageRoot     = Some("s3a://lake/sdp/prod"),
+    useTls          = true,
+    tokenEnv        = Some("SDP_PROD_TOKEN"),   // the NAME of an env var, never a secret
+  ),
+)
+```
+
+```
+sbt:warehouse> sdpRunOn dev        # your own schema: dev_<user>, collision-free
+sbt:warehouse> sdpDryRunOn prod    # prod's real catalog, zero execution — the pre-merge gate
+```
+
 ```bash
-# prod (the SdpApp runner env — an Argo pod, a CI job):
+# prod (the SdpApp runner env — an Argo pod, a CI job): each SdpTarget field is
+# the SDP_* variable the runner already reads.
 SDP_DEFAULT_CATALOG=warehouse SDP_DEFAULT_DATABASE=analytics java -jar pipeline.jar run
 ```
+
+A target varies **where** a pipeline runs, never **what** it is: `sdpManifest`
+and `sdpValidate` never read `sdpTargets`, so every environment registers the
+*same manifest bytes* — the hash you validated in dev is the hash prod runs
+(asserted by the `sdp/targets` scripted suite).
 
 Shared upstream *sources* (`externalTable("bronze.orders")`) stay qualified in
 code, so every environment reads the same inputs — the dbt source/model split.
 
 **The Nessie variant (recommended on the demo stack):** instead of renaming
 schemas, pin a catalog to a branch (`spark.sql.catalog.warehouse_dev.ref =
-dev-eric`) and point `sdpDefaultCatalog` at it — identical table names, an
-isolated timeline, and an atomic `MERGE BRANCH dev-eric INTO main` promotes
-every table the pipeline touched at once: the data pull-request.
+dev-eric`) and point the target's `defaultCatalog` at it — identical table
+names, an isolated timeline, and an atomic `MERGE BRANCH dev-eric INTO main`
+promotes every table the pipeline touched at once: the data pull-request.

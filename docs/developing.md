@@ -45,8 +45,15 @@ sbt 'sbtSparkPipelines/scripted sdp/valid-pipeline' # one sandbox
 ```
 
 Sandboxes live under `sbt-spark-pipelines/src/sbt-test/sdp/*` (`valid-pipeline`,
-`cyclic-pipeline`, `caching`). `scriptedDependencies` publishes all three modules to the local
-ivy repo first, so scripted always tests the *current* code.
+`cyclic-pipeline`, `caching`, `targets`). `scriptedDependencies` publishes all three modules to
+the local ivy repo first, so scripted always tests the *current* code.
+
+`targets` needs no Spark server: every endpoint it declares is deliberately dead (port 1, and
+a reserved `.invalid` host), because what it asserts is the target model — useful failures for
+unknown/unauthenticated targets, that a `*On` task really dials its target's endpoint, and the
+**promotion property**: manifest SHA-256 unchanged across a target swap and a full
+environment repoint. Its check tasks are all `Def.uncached` — sbt 2 would otherwise replay an
+unchanged task from the action cache, and a skipped assertion asserts nothing.
 
 ## Live-server integration tests — the `sdpIt` module (podman/docker required)
 
