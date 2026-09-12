@@ -306,6 +306,14 @@ source table — `externalTable` + the catalog, or `sdpSeed`. Cells are
 `Int`/`Long`/`Double`/`Boolean`/`String`/`null`; for richer shapes, build the
 rows with a SQL `VALUES`/`SELECT` via `spark.sql(...)`.
 
+**Non-finite doubles are rejected.** `lit(Double.NaN)`, an infinite value, a NaN
+sampling fraction or a NaN inline cell all fail immediately with a readable
+error. The reason is value equality: `NaN != NaN`, so a plan containing one would
+not equal itself after a manifest round-trip, and every equality-based check
+(manifest re-parse, cache identity, the render oracle) would quietly disagree
+with itself. If you genuinely need the value, let the server build it:
+`expr("double('NaN')")`.
+
 ### Schema checking (gradual)
 
 Declare columns where they're unknowable — external sources — and every

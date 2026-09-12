@@ -82,8 +82,10 @@ final case class Df(rel: Rel):
 
   // --- sample / hint / partitioning ----------------------------------
   /** `sample(fraction)` / `sample(fraction, seed)`. */
-  def sample(fraction: Double): Df             = Df(Rel.Sample(rel, fraction, None))
-  def sample(fraction: Double, seed: Long): Df = Df(Rel.Sample(rel, fraction, Some(seed)))
+  def sample(fraction: Double): Df =
+    Df(Rel.Sample(rel, RelCodec.requireFinite("sample fraction", fraction), None))
+  def sample(fraction: Double, seed: Long): Df =
+    Df(Rel.Sample(rel, RelCodec.requireFinite("sample fraction", fraction), Some(seed)))
   /** `hint(name, params*)`. */
   def hint(name: String, parameters: Column*): Df =
     Df(Rel.Hint(rel, name, parameters.map(_.ex).toList))

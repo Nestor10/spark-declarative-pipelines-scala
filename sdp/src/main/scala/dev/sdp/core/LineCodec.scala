@@ -126,3 +126,27 @@ private[core] object LineCodec:
     * descent runs, and `parseLine` below decodes its own fields with [[decode]].
     * It is NOT a parsing entry point — never call it on unvalidated input. */
   private[core] def dec(s: String): String = URLDecoder.decode(s, UTF_8)
+
+  /** The reserved spelling of the EMPTY atom in the space-separated dialects.
+    * `URLEncoder` escapes a literal `~` to `%7E`, so `~` can never be produced
+    * by [[enc]] and the sentinel is unambiguous. */
+  private val EmptyAtom = "~"
+
+  /** Atom encoding for the SPACE-separated dialects — `RelCodec`'s
+    * s-expressions and `FlowCodec`'s token stream.
+    *
+    * Identical to [[enc]] except for the empty string: `enc("")` is `""`, and an
+    * empty token simply VANISHES when the text is split on whitespace, so
+    * `(sql <empty>)` used to render as `(sql )` and fail to parse — an empty
+    * dataset name, alias or SQL string silently broke the round-trip (found by
+    * `RelCodecPropertySpec`). The `|`-separated line dialect does not need this:
+    * there an empty field is unambiguous, so [[enc]] stays byte-identical and
+    * manifest v2 is untouched. */
+  private[core] def encAtom(s: String): String = if s.isEmpty then EmptyAtom else enc(s)
+
+  /** Total inverse of [[encAtom]]. */
+  private[core] def decodeAtom(s: String): Either[String, String] =
+    if s == EmptyAtom then Right("") else decode(s)
+
+  /** Post-validation inverse of [[encAtom]] — see [[dec]]. */
+  private[core] def decAtom(s: String): String = if s == EmptyAtom then "" else dec(s)

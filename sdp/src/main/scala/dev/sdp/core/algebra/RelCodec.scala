@@ -26,6 +26,39 @@ import dev.sdp.core.LineCodec
   */
 object RelCodec:
 
+  /** **Non-finite doubles are not representable in the algebra.**
+    *
+    * `F64` and the sampling fractions render via `toString`, so `NaN` renders as
+    * "NaN" and parses back to a `NaN` — faithful, but `NaN != NaN`, so the
+    * codec's own law `parse(render(t)) == t` would be FALSE for such a tree, and
+    * every equality-based check downstream (manifest round-trip, cache-identity
+    * comparisons, the golden oracle) would silently disagree with itself.
+    * Canonicalising cannot save it: there is no double that equals NaN.
+    *
+    * So the decision is to REJECT, at both ends: the DSL refuses to build a
+    * non-finite literal or fraction (pointing at `expr("double('NaN')")`, which
+    * lets the SERVER construct the value), and [[parse]] refuses to accept one,
+    * so a hand-edited or version-skewed manifest cannot smuggle one in. Every
+    * tree the DSL can build therefore satisfies the round-trip law — which is
+    * what `RelCodecPropertySpec` asserts.
+    */
+  def finiteOrError(context: String, value: Double): Either[String, Double] =
+    if value.isNaN || value.isInfinite then
+      Left(
+        s"$context must be finite, got '$value'. Non-finite doubles are not representable " +
+          "in the pipeline algebra (NaN breaks value equality); write it as " +
+          "expr(\"double('NaN')\") so the server constructs it."
+      )
+    else Right(value)
+
+  /** Throwing form for the DSL surface (a build-time author error, like an
+    * invalid schema DDL). */
+  def requireFinite(context: String, value: Double): Double =
+    finiteOrError(context, value).fold(
+      msg => throw new IllegalArgumentException(msg),
+      identity,
+    )
+
   // ------------------------------------------------------------------
   // rendering
   // ------------------------------------------------------------------
@@ -257,7 +290,7 @@ object RelCodec:
       // the bad token, which is what a version-skewed boundary needs.
       val badAtom = tokens.iterator
         .filter(t => t != "(" && t != ")")
-        .map(LineCodec.decode)
+        .map(LineCodec.decodeAtom)
         .collectFirst { case Left(problem) => problem }
       badAtom.toLeft(()).flatMap { _ =>
         readOne(tokens).flatMap {
@@ -391,7 +424,9 @@ object RelCodec:
     case Sexp.ListOf(Sexp.Atom("sample") :: input :: Sexp.Atom(fraction) :: Sexp.Atom(seed) :: Nil) =>
       for
         i <- rel(input)
-        f <- fraction.toDoubleOption.toRight(s"sample fraction: $fraction")
+        f <- fraction.toDoubleOption
+               .toRight(s"sample fraction: $fraction")
+               .flatMap(finiteOrError("sample fraction", _))
         s <- seed match
           case "noseed" => Right(None)
           case v        => v.toLongOption.map(Some(_)).toRight(s"sample seed: $v")
@@ -464,7 +499,9 @@ object RelCodec:
           case Sexp.ListOf(Sexp.Atom("frac") :: st :: Sexp.Atom(f) :: Nil) =>
             for
               sv <- ex(st).flatMap { case Ex.Lit(v) => Right(v); case _ => Left("sampleby: stratum not literal") }
-              fv <- f.toDoubleOption.toRight(s"sampleby fraction: $f")
+              fv <- f.toDoubleOption
+                      .toRight(s"sampleby fraction: $f")
+                      .flatMap(finiteOrError("sampleby fraction", _))
             yield (sv, fv)
           case other => Left(s"unrecognized fraction form: ${describe(other)}")
         }
@@ -573,7 +610,11 @@ object RelCodec:
         case "bool" => v.toBooleanOption.map(b => Ex.Lit(LitValue.Bool(b))).toRight(s"lit bool: $v")
         case "i32"  => v.toIntOption.map(i => Ex.Lit(LitValue.I32(i))).toRight(s"lit i32: $v")
         case "i64"  => v.toLongOption.map(l => Ex.Lit(LitValue.I64(l))).toRight(s"lit i64: $v")
-        case "f64"  => v.toDoubleOption.map(d => Ex.Lit(LitValue.F64(d))).toRight(s"lit f64: $v")
+        case "f64" =>
+          v.toDoubleOption
+            .toRight(s"lit f64: $v")
+            .flatMap(finiteOrError("lit f64", _))
+            .map(d => Ex.Lit(LitValue.F64(d)))
         case "str"  => Right(Ex.Lit(LitValue.Str(dec(v))))
         case other  => Left(s"unknown literal tag: $other")
     case Sexp.ListOf(Sexp.Atom("fn") :: Sexp.Atom(name) :: Sexp.Atom(distinct) :: args) =>
@@ -716,5 +757,7 @@ object RelCodec:
     case Sexp.Atom(v)     => v
     case Sexp.ListOf(its) => its.take(2).map(describe).mkString("(", " ", " ...)")
 
-  private def enc(s: String): String = LineCodec.enc(s)
-  private def dec(s: String): String = LineCodec.dec(s)
+  // Atoms live in a space-separated dialect, so the empty string needs the
+  // reserved sentinel — see LineCodec.encAtom.
+  private def enc(s: String): String = LineCodec.encAtom(s)
+  private def dec(s: String): String = LineCodec.decAtom(s)

@@ -1,6 +1,7 @@
 package dev.sdp.dsl
 
 import dev.sdp.core.algebra.*
+import dev.sdp.core.algebra.RelCodec
 
 /** Top-level expression constructors: `col`, `lit`, `star`, `expr`, `fn`,
   * `lam`/`lam2`, and the subquery combinators `exists`/`scalar`. Each builds one
@@ -17,7 +18,8 @@ val star: Column = Column(Ex.Star(None))
 // value, so a computed value is as welcome as a constant.
 def lit(value: Int): Column     = Column(Ex.Lit(LitValue.I32(value)))
 def lit(value: Long): Column    = Column(Ex.Lit(LitValue.I64(value)))
-def lit(value: Double): Column  = Column(Ex.Lit(LitValue.F64(value)))
+def lit(value: Double): Column  =
+  Column(Ex.Lit(LitValue.F64(RelCodec.requireFinite("lit(Double)", value))))
 def lit(value: Boolean): Column = Column(Ex.Lit(LitValue.Bool(value)))
 def lit(value: String): Column  = Column(Ex.Lit(LitValue.Str(value)))
 

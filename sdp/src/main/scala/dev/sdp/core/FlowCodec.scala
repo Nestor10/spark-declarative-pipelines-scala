@@ -25,7 +25,10 @@ import dev.sdp.core.algebra.{Ex, RelCodec}
   */
 private[core] object FlowCodec:
 
-  import LineCodec.{decode, enc}
+  // The details field is a space-separated token stream, so atoms use the
+  // empty-safe encoding (LineCodec.encAtom) — an empty `source` would otherwise
+  // vanish from the stream.
+  import LineCodec.{decodeAtom as decode, encAtom as enc}
 
   // ------------------------------------------------------------------ render
 

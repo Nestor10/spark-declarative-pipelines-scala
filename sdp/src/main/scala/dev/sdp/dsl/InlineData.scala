@@ -19,7 +19,7 @@ object InlineRows:
     case null       => LitValue.Null
     case v: Int     => LitValue.I32(v)
     case v: Long    => LitValue.I64(v)
-    case v: Double  => LitValue.F64(v)
+    case v: Double  => LitValue.F64(RelCodec.requireFinite("inline-table cell", v))
     case v: Boolean => LitValue.Bool(v)
     case v: String  => LitValue.Str(v)
     case other =>
@@ -37,7 +37,8 @@ object InlineRows:
   /** Single-column rows: a bare literal value, one given per cell kind. */
   given intRow: InlineRows[Int]         = (a: Int) => List(LitValue.I32(a))
   given longRow: InlineRows[Long]       = (a: Long) => List(LitValue.I64(a))
-  given doubleRow: InlineRows[Double]   = (a: Double) => List(LitValue.F64(a))
+  given doubleRow: InlineRows[Double] =
+    (a: Double) => List(LitValue.F64(RelCodec.requireFinite("inline-table cell", a)))
   given booleanRow: InlineRows[Boolean] = (a: Boolean) => List(LitValue.Bool(a))
   given stringRow: InlineRows[String]   = (a: String) => List(LitValue.Str(a))
 
