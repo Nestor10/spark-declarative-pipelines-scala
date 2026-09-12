@@ -124,6 +124,18 @@ object SparkPipelinesPlugin extends AutoPlugin {
     val sdpWatchInterval = settingKey[Int](
       "Seconds between sdpWatch re-triggers. Default 30."
     )
+    val sdpRunOn = inputKey[Unit](
+      "`sdpRunOn <target>` — sdpRun against a named sdpTargets environment. The target supplies " +
+        "ONLY the connection (endpoint, catalog/database, storage, TLS/token); the manifest is the " +
+        "same bytes every target runs."
+    )
+    val sdpDryRunOn = inputKey[Unit](
+      "`sdpDryRunOn <target>` — sdpDryRun against a named sdpTargets environment. Full server-side " +
+        "Catalyst validation against that environment's real catalog, zero execution: the pre-merge gate."
+    )
+    val sdpSeedOn = inputKey[Unit](
+      "`sdpSeedOn <target>` — run sdpSeedStatements against a named sdpTargets environment."
+    )
     val sdpSchemasPackage = settingKey[String](
       "Package for generated named-tuple schema aliases."
     )
@@ -278,6 +290,53 @@ object SparkPipelinesPlugin extends AutoPlugin {
       )
     },
 
+    // ---------------------------------------------------------------------
+    // Target-addressable tasks (E2). Each one resolves `<target>` through
+    // `sdpTargets` and then calls EXACTLY the body its untargeted twin calls —
+    // the target's only contribution is the `ResolvedConnection`. Nothing here
+    // touches `sdpManifest`'s inputs, so `sdpRunOn dev` and `sdpRunOn prod`
+    // register identical manifest bytes; that is the promotion property, and
+    // the scripted `targets` suite asserts it by hash.
+    //
+    // Input tasks are uncached by construction (`Def.inputTask` never builds a
+    // cached task), which is what these are: network effects parameterised by
+    // a command-line argument. Reading the environment for a target's
+    // `tokenEnv` therefore happens here, at task time — not in a setting, and
+    // never inside a cached task body.
+    // ---------------------------------------------------------------------
+    sdpRunOn := {
+      val requested = targetNameParser.parsed
+      pushOrRun(
+        log = streams.value.log,
+        conv = fileConverter.value,
+        conn = resolveTarget(baseConnection.value, sdpTargets.value, requested, "sdpRunOn"),
+        manifestRef = sdpManifest.value,
+        dry = false,
+        timeoutSeconds = sdpRunTimeout.value,
+      )
+    },
+
+    sdpDryRunOn := {
+      val requested = targetNameParser.parsed
+      pushOrRun(
+        log = streams.value.log,
+        conv = fileConverter.value,
+        conn = resolveTarget(baseConnection.value, sdpTargets.value, requested, "sdpDryRunOn"),
+        manifestRef = sdpManifest.value,
+        dry = true,
+        timeoutSeconds = sdpRunTimeout.value,
+      )
+    },
+
+    sdpSeedOn := {
+      val requested = targetNameParser.parsed
+      seed(
+        log = streams.value.log,
+        conn = resolveTarget(baseConnection.value, sdpTargets.value, requested, "sdpSeedOn"),
+        statements = sdpSeedStatements.value.toList,
+      )
+    },
+
     // Plaintext + anonymous by default: the inner loop talks to a local
     // container. The token default reads the environment ONCE, in a setting —
     // never inside a cached task body (that would break cache stability).
@@ -406,6 +465,36 @@ object SparkPipelinesPlugin extends AutoPlugin {
       versionCheck = sdpVersionCheck.value,
     )
   )
+
+  /** The `<target>` argument of `sdpRunOn` / `sdpDryRunOn` / `sdpSeedOn`, with
+    * TAB-completion over the declared `sdpTargets` keys.
+    *
+    * A setting-dependent parser (`Initialize[State => Parser[…]]`), because the
+    * completions are the build's own target names. It deliberately accepts an
+    * unknown name rather than failing to parse: an unparsed argument gets sbt's
+    * generic syntax error, whereas letting the task resolve it produces our
+    * one-line "unknown target 'x'. Available targets: …" — the message is the
+    * feature.
+    */
+  private lazy val targetNameParser: Def.Initialize[sbt.State => sbt.internal.util.complete.Parser[String]] =
+    Def.setting { (_: sbt.State) =>
+      import sbt.internal.util.complete.DefaultParsers.*
+      val names = sdpTargets.value.keys.toList.sorted
+      Space ~> token(StringBasic.examples(names*), "<target>")
+    }
+
+  /** Resolve `<target>` against `sdpTargets`, failing the task with the whole
+    * rendered message when it cannot (unknown name, empty map, invalid target,
+    * missing token variable). Environment access happens HERE — task time. */
+  private def resolveTarget(
+      base: BaseConnection,
+      targets: Map[String, SdpTarget],
+      requested: String,
+      taskName: String,
+  ): ResolvedConnection =
+    TargetResolution
+      .select(base, targets, requested, sys.env.get, taskName)
+      .fold(message => sys.error(message), identity)
 
   /** Proto DataType kind names (lower-cased KindCase) → ColType. */
   private def kindToColType(kind: String): dev.sdp.core.algebra.ColType =
@@ -580,7 +669,13 @@ object SparkPipelinesPlugin extends AutoPlugin {
 
     SdpZioBridge.run(effect) match
       case Left(err) =>
-        sys.error(s"sdp: ${if dry then "validation" else "run"} failed — ${err.describe}")
+        // Name the endpoint AND its provenance: with several targets in play,
+        // "which environment did this fail against?" is the first question, and
+        // a transport failure otherwise answers it only in the log above.
+        sys.error(
+          s"sdp: ${if dry then "validation" else "run"} failed on ${conn.endpoint} " +
+            s"(${conn.origin}) — ${err.describe}"
+        )
       case Right((graphId, false)) =>
         log.warn(
           s"sdp: run still in progress after ${timeoutSeconds}s — detached. The server keeps " +
@@ -637,7 +732,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
     val loop = cycle.repeat(zio.Schedule.spaced(zio.Duration.fromSeconds(intervalSeconds.toLong))).unit
 
     SdpZioBridge.run(loop) match
-      case Left(err) => sys.error(s"sdp: watch failed — ${err.describe}")
+      case Left(err) => sys.error(s"sdp: watch failed on ${conn.endpoint} (${conn.origin}) — ${err.describe}")
       case Right(_)  => () // unreachable under spaced(); Ctrl-C interrupts instead
 
   /** THE shared body for `sdpSeed` and `sdpSeedOn` — fixture SQL against the
@@ -654,6 +749,6 @@ object SparkPipelinesPlugin extends AutoPlugin {
         s"sdp: seeding ${statements.size} statement(s) on ${conn.endpoint} (${conn.origin})"
       )
       SdpZioBridge.run(CatalogSeeder.run(host, port, statements, conn.transport)) match
-        case Left(err) => sys.error(s"sdp: seeding failed — ${err.describe}")
+        case Left(err) => sys.error(s"sdp: seeding failed on ${conn.endpoint} (${conn.origin}) — ${err.describe}")
         case Right(_)  => log.info(s"sdp: seeded ${statements.size} statement(s).")
 }
