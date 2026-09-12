@@ -95,11 +95,41 @@ object SupportedCapabilities:
     "start_run",
   )
 
+  /** `DefineFlow` fields the encoder sets — one level below the oneof entry,
+    * because "we emit define_flow" says nothing about *which* flow shape. Both
+    * details branches are emitted (relation flows and, since roadmap S1, AUTO
+    * CDC); `once` is emitted only when the author asks for it (the server
+    * rejects it on presence today — behavioral rows ONCE-1/ONCE-2). */
+  val defineFlowFields: Set[String] = Set(
+    "relation_flow_details",
+    "auto_cdc_flow_details",
+    "once",
+  )
+
+  /** Every field of `AutoCdcFlowDetails` in the pinned 4.2.0 proto — the whole
+    * SCD1-era message, all of it emitted. SCD2's `track_history_*` (11/12) and
+    * `SCD_TYPE_2` are master-only and do not appear in the inventory yet, so
+    * there is nothing to claim or to omit (roadmap S2). */
+  val autoCdcFields: Set[String] = Set(
+    "source",
+    "keys",
+    "sequence_by",
+    "apply_as_deletes",
+    "apply_as_truncates",
+    "column_list",
+    "except_column_list",
+    "stored_as_scd_type",
+    "ignore_null_updates_column_list",
+    "ignore_null_updates_except_column_list",
+  )
+
   /** Fully qualified capability claims, for inventory verification. */
   val claims: Set[String] =
     relations.map(f => s"spark.connect.Relation#$f") ++
       expressions.map(f => s"spark.connect.Expression#$f") ++
-      pipelineCommands.map(f => s"spark.connect.PipelineCommand#$f")
+      pipelineCommands.map(f => s"spark.connect.PipelineCommand#$f") ++
+      defineFlowFields.map(f => s"spark.connect.PipelineCommand.DefineFlow#$f") ++
+      autoCdcFields.map(f => s"spark.connect.PipelineCommand.DefineFlow.AutoCdcFlowDetails#$f")
 
   /** Per-tier coverage of the Relation surface + visible untriaged counts. */
   def report: String =
@@ -125,4 +155,20 @@ object SupportedCapabilities:
         s"  untriaged expression entries: ${untriagedExpr.size}${if untriagedExpr.isEmpty then "" else untriagedExpr.mkString(" (", ", ", ")")}",
         s"  expressions supported:        $exprSupported / ${exprEntries.size}  (${expressions.toList.sorted.mkString(", ")})",
         s"  pipeline commands supported:  ${pipelineCommands.toList.sorted.mkString(", ")}",
+        s"  define_flow fields emitted:   ${defineFlowFields.toList.sorted.mkString(", ")}",
+        s"  auto cdc fields emitted:      ${autoCdcFields.size} / $autoCdcFieldsOnTheWire${
+            if autoCdcFields.size == autoCdcFieldsOnTheWire then " (whole message)"
+            else autoCdcNotEmitted.mkString(" — not emitted: ", ", ", "")
+          }",
       )).mkString("\n")
+
+  /** Field names of `AutoCdcFlowDetails` in the PINNED artifact — read from the
+    * descriptor, never typed out, so a 4.3 bump that adds SCD2's track-history
+    * lists turns the report line into `10 / 12` by itself. */
+  private def autoCdcFieldsOnWire: List[String] =
+    import scala.jdk.CollectionConverters.*
+    org.apache.spark.connect.proto.PipelineCommand.DefineFlow.AutoCdcFlowDetails.getDescriptor.getFields.asScala.toList
+      .map(_.getName)
+
+  private def autoCdcFieldsOnTheWire: Int = autoCdcFieldsOnWire.size
+  private def autoCdcNotEmitted: List[String] = autoCdcFieldsOnWire.filterNot(autoCdcFields.contains)

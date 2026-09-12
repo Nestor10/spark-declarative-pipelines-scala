@@ -3,12 +3,17 @@ package dev.sdp.connect
 import dev.sdp.core.{FlowDetails, PipelineManifest, PipelineNode}
 import org.apache.spark.connect.proto as sc
 
-/** Thrown when the manifest carries a construct this encoder does not emit on
-  * the wire yet. Today that is AUTO CDC: `AutoCdcFlowDetails` *is* present in
-  * the pinned `spark-connect-common 4.2.0`, but the encode is not implemented
-  * (roadmap S1 turns it on; [[VersionGate]] then guards the server side, since
-  * a 4.1 server would silently drop the message). `validate`/`manifest` accept
-  * such a pipeline offline; `run`/`dry-run` refuse it here, readably. */
+/** Thrown when the manifest carries a construct this encoder cannot put on the
+  * pinned wire. `validate`/`manifest` accept such a pipeline offline, so the
+  * author meets it at `run`/`dry-run` — and must read a sentence, not a defect
+  * trace ([[PipelinesRegistration.RegistrationError.UnsupportedWire]] carries
+  * it into the typed channel).
+  *
+  * AUTO CDC used to live here; since roadmap S1 it is encoded unconditionally
+  * and *server* version safety is [[VersionGate]]'s job. What remains is the
+  * genuinely unrepresentable: a subquery inside a standalone expression
+  * ([[AlgebraProtoEncoder.expression]]). Roadmap S2 (SCD2, gated on a 4.3
+  * proto) is the next construct expected to use this. */
 final class UnsupportedWireFeature(message: String) extends RuntimeException(message)
 
 /** Pure translation from the canonical [[PipelineManifest]] to the Spark
@@ -235,46 +240,70 @@ object PipelineProtoEncoder:
           .newBuilder()
           .setRelation(relation)
       )
+    // `once` is set ONLY when true, never `setOnce(false)`: the server checks
+    // PRESENCE (`if (flow.hasOnce) throw DEFINE_FLOW_ONCE_OPTION_NOT_SUPPORTED`
+    // — PipelinesHandler.defineFlow, still true at 4.2.0 and at master HEAD), so
+    // an explicit false would fail every ordinary flow. See the behavioral
+    // matrix rows ONCE-1 / ONCE-2 (BehaviorInventory); asserted by
+    // PipelineProtoEncoderSpec ("a once=false flow leaves the field ABSENT").
     if once then { val _ = flow.setOnce(true) }
     sc.PipelineCommand.newBuilder().setDefineFlow(flow).build()
 
-  /** AUTO CDC flow → the wire. **Gated**: the `DefineFlow.auto_cdc_flow_details`
-    * oneof branch exists in the pinned `spark-connect-common 4.2.0`, but this
-    * build does not emit it yet. Fail loud with a readable, typed error rather
-    * than silently dropping the flow — `validate`/`manifest` already accepted it
-    * offline, so the user only hits this at `run`/`dry-run`.
+  /** AUTO CDC flow → the wire (`DefineFlow.auto_cdc_flow_details`, field 10).
     *
-    * GATE(spark-4.2) — roadmap S1: delete the throw and emit the oneof branch
-    * below; server-side safety is then the [[VersionGate]] handshake's job (a
-    * 4.1 server must be refused, not sent a message proto3 will strip). From
-    * `pipelines.proto` (`AutoCdcFlowDetails`, field numbers per [[FlowDetails]]):
-    * {{{
-    *   val cdc = flow.details.asInstanceOf[FlowDetails.AutoCdc]
-    *   val ac  = sc.PipelineCommand.DefineFlow.AutoCdcFlowDetails.newBuilder()
-    *   ac.setSource(cdc.source)                                    // field 1
-    *   cdc.keys.foreach(k => ac.addKeys(AlgebraProtoEncoder.expression(k)))        // 2
-    *   ac.setSequenceBy(AlgebraProtoEncoder.expression(cdc.sequenceBy))            // 3
-    *   cdc.applyAsDeletes.foreach(e => ac.setApplyAsDeletes(AlgebraProtoEncoder.expression(e)))   // 6
-    *   cdc.applyAsTruncates.foreach(e => ac.setApplyAsTruncates(AlgebraProtoEncoder.expression(e)))// 7
-    *   cdc.columnList.foreach(e => ac.addColumnList(AlgebraProtoEncoder.expression(e)))            // 8
-    *   cdc.exceptColumnList.foreach(e => ac.addExceptColumnList(AlgebraProtoEncoder.expression(e)))// 9
-    *   cdc.scdType match { case ScdType.Scd1 => ac.setStoredAsScdType(sc.SCDType.SCD_TYPE_1) }     // 10
-    *   cdc.ignoreNullUpdatesColumnList.foreach(e => ac.addIgnoreNullUpdatesColumnList(...))        // 14
-    *   cdc.ignoreNullUpdatesExceptColumnList.foreach(e => ac.addIgnoreNullUpdatesExceptColumnList(...))// 15
-    *   val df = sc.PipelineCommand.DefineFlow.newBuilder()
-    *     .setDataflowGraphId(graphId).setFlowName(flow.name)
-    *     .setTargetDatasetName(flow.target).setAutoCdcFlowDetails(ac)
-    *   if flow.once then df.setOnce(true)
-    *   sc.PipelineCommand.newBuilder().setDefineFlow(df).build()
-    * }}}
-    * (`AlgebraProtoEncoder.expression` is the `Ex` → `sc.Expression` encoder.)
+    * Ungated since roadmap S1: the pinned `spark-connect-common 4.2.0` carries
+    * `AutoCdcFlowDetails`, so the encode is unconditional and **version safety
+    * is the [[VersionGate]] handshake's job** — a sub-4.2 server is refused
+    * before `CreateDataflowGraph`, because proto3 would silently strip this
+    * branch and leave the server with a detail-less `DefineFlow`.
+    *
+    * Every SCD1-era field of the published 4.2.0 message is emitted (field
+    * numbers per [[FlowDetails.AutoCdc]]). Two server-side facts worth carrying
+    * here rather than rediscovering:
+    *
+    *   - `apply_as_truncates` and the two `ignore_null_updates_*` lists are
+    *     declared on the message but **not yet honored by the 4.2.0 engine**
+    *     (`PipelinesHandler.buildAutoCdcFlow`, TODO SPARK-57092 / SPARK-57093).
+    *     We send them because the author asked for them and the wire accepts
+    *     them; the engine will start honoring them without a client change.
+    *   - `keys`, `column_list` and `except_column_list` must resolve to plain
+    *     column identifiers — the server maps each through
+    *     `asUnqualifiedColumnName` and fails `AUTOCDC_NON_COLUMN_IDENTIFIER`
+    *     otherwise. `sequence_by` and the conditions are ordinary expressions.
+    *
+    * SCD2 (`SCD_TYPE_2` + the track-history lists) is deliberately absent:
+    * those fields do not exist in the 4.2.0 proto (roadmap S2, gated on 4.3).
     */
   private def autoCdcFlowCommand(graphId: String, flow: dev.sdp.core.Flow): sc.PipelineCommand =
-    throw new UnsupportedWireFeature(
-      s"AUTO CDC flow '${flow.name}' (target '${flow.target}') is not encoded on the wire yet. " +
-        "The pinned spark-connect-common 4.2.0 carries AutoCdcFlowDetails, but this build does " +
-        "not emit it — validate/manifest work offline, run/dry-run cannot register this flow."
-    )
+    val cdc = flow.details match
+      case c: FlowDetails.AutoCdc => c
+      case other =>
+        throw new IllegalStateException(s"autoCdcFlowCommand called with $other")
+
+    val ex = AlgebraProtoEncoder.expression(_)
+    val ac = sc.PipelineCommand.DefineFlow.AutoCdcFlowDetails.newBuilder()
+    ac.setSource(cdc.source)                                                  // 1
+    cdc.keys.foreach(k => ac.addKeys(ex(k)))                                  // 2
+    ac.setSequenceBy(ex(cdc.sequenceBy))                                      // 3
+    cdc.applyAsDeletes.foreach(e => ac.setApplyAsDeletes(ex(e)))              // 6
+    cdc.applyAsTruncates.foreach(e => ac.setApplyAsTruncates(ex(e)))          // 7
+    cdc.columnList.foreach(e => ac.addColumnList(ex(e)))                      // 8
+    cdc.exceptColumnList.foreach(e => ac.addExceptColumnList(ex(e)))          // 9
+    cdc.scdType match                                                         // 10
+      case dev.sdp.core.ScdType.Scd1 =>
+        ac.setStoredAsScdType(sc.PipelineCommand.DefineFlow.SCDType.SCD_TYPE_1)
+    cdc.ignoreNullUpdatesColumnList.foreach(e => ac.addIgnoreNullUpdatesColumnList(ex(e)))             // 14
+    cdc.ignoreNullUpdatesExceptColumnList.foreach(e => ac.addIgnoreNullUpdatesExceptColumnList(ex(e))) // 15
+
+    val df = sc.PipelineCommand.DefineFlow
+      .newBuilder()
+      .setDataflowGraphId(graphId)
+      .setFlowName(flow.name)
+      .setTargetDatasetName(flow.target)
+      .setAutoCdcFlowDetails(ac)
+    // Presence, not value — see the note on flowCommand above (ONCE-1/ONCE-2).
+    if flow.once then { val _ = df.setOnce(true) }
+    sc.PipelineCommand.newBuilder().setDefineFlow(df).build()
 
   private def readRelation(upstream: String, streaming: Boolean): sc.Relation =
     sc.Relation

@@ -120,7 +120,7 @@ datasets with `STREAM(...)`. Note `STREAM` works over streaming tables, not
 batch views; data enters a pipeline through real streaming sources (Kafka,
 files, `rate`), which the typed algebra exposes as `Rel.DataSource`.
 
-### AUTO CDC (Spark 4.2, gated)
+### AUTO CDC (needs a Spark 4.2+ server)
 
 Spark 4.2 adds **AUTO CDC** to SDP — the declarative MERGE/SCD construct
 donated from DLT's `apply_changes`. You declare a *streaming-table shell* as
@@ -155,20 +155,27 @@ becomes a read (lineage edge) of the flow, so a missing source is caught by
 the dangling-dependency validator. Validation also enforces that the target is
 a declared **streaming table** and that `keys` is non-empty.
 
-**Gated at the wire.** The pinned `spark-connect-common 4.2.0` *does* carry
-`AutoCdcFlowDetails`, but this build does not emit it yet. So `sdpValidate` /
-`sdpManifest` (offline, deterministic) fully support AUTO CDC *today* — the
-domain, codec, and validation all work — but `sdpRun` / `sdpDryRun` (and
-`SdpApp run`) fail with a clear error:
+**On the wire, on a 4.2+ server.** The flow is encoded as
+`DefineFlow.auto_cdc_flow_details` (every SCD1 field of the published 4.2.0
+proto: source, keys, sequence_by, apply_as_deletes, apply_as_truncates,
+column_list, except_column_list, stored_as_scd_type, and the two
+ignore_null_updates lists). `sdpValidate` / `sdpManifest` work offline as
+always; `sdpDryRun` / `sdpRun` / `SdpApp run` register it for real.
 
-> AUTO CDC flow '…' is not encoded on the wire yet. The pinned
-> spark-connect-common 4.2.0 carries AutoCdcFlowDetails, but this build does not
-> emit it — validate/manifest work offline, run/dry-run cannot register this flow.
+Against an **older server** the
+[version handshake](plugin.md#server-version-handshake) refuses the pipeline
+*before* anything is registered — proto3 would otherwise silently strip the
+branch and the server would see a `DefineFlow` with no details:
 
-When the encode is turned on, the **server**-side safety net is the
-[version handshake](plugin.md#server-version-handshake): AUTO CDC requires a
-Spark 4.2+ server, and a 4.1 server is refused before registration rather than
-being sent a message proto3 would silently strip.
+> AUTO CDC flow (SCD type 1) 'dim_customers_auto_cdc' (target 'dim_customers')
+> needs a Spark 4.2+ server; sc://localhost:15002 reports 4.1.2
+
+Two 4.2.0 server-side caveats worth knowing, read from
+`PipelinesHandler.buildAutoCdcFlow`: `applyAsTruncates` and the two
+`ignoreNullUpdates*` lists are accepted on the wire but **not yet honored by the
+4.2.0 engine** (SPARK-57092 / SPARK-57093); and `keys`, `columnList` and
+`exceptColumnList` must be plain column references (`col("id")`) — an expression
+there is rejected as `AUTOCDC_NON_COLUMN_IDENTIFIER`.
 
 The manifest header bumps to `sdp-manifest/3` when a pipeline contains an AUTO
 CDC flow (or a `once` flow, below); pipelines without these constructs still

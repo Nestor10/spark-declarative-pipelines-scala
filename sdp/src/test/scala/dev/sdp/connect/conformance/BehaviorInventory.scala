@@ -296,7 +296,7 @@ object BehaviorInventory:
       Area.OnceFlows,
       "the server checks `hasOnce` — PRESENCE, not value — so explicitly sending once=false also fails; the field must be left unset",
       "sql/connect/server/.../connect/pipelines/PipelinesHandler.scala → PipelinesHandler.defineFlow",
-      Coverage.Uncovered("satisfied by construction (the encoder only ever calls setOnce(true)); PipelineProtoEncoderSpec asserts the positive case only, nothing asserts the absence"),
+      Coverage.Uncovered("our side of it is now pinned — PipelineProtoEncoderSpec asserts the field is ABSENT on every once=false flow, relation and AUTO CDC alike (S1). The SERVER's presence rule itself is still only source-read here"),
     ),
     Behavior(
       "ONCE-3-dormant-engine",

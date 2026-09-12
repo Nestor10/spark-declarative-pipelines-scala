@@ -1,6 +1,9 @@
 package dev.sdp.connect
 
+import scala.jdk.CollectionConverters.*
+
 import dev.sdp.core.*
+import dev.sdp.core.algebra.{Ex, LitValue, Rel, SubqueryKind}
 import org.apache.spark.connect.proto as sc
 import zio.test.*
 
@@ -36,6 +39,40 @@ object PipelineProtoEncoderSpec extends ZIOSpecDefault:
   private val outputs  = commands.filter(_.hasDefineOutput).map(_.getDefineOutput)
   private val flows    = commands.filter(_.hasDefineFlow).map(_.getDefineFlow)
 
+  // ---------------------------------------------------------------- AUTO CDC
+  // One helper, two uses: the maximal flow (every SCD1-era field set) and the
+  // minimal one (nothing but the required three), so "emitted" and "omitted"
+  // are asserted from the same encode path.
+  private def autoCdcDefinitions(
+      details: FlowDetails.AutoCdc,
+      once: Boolean = false,
+  ): sc.PipelineCommand.DefineFlow =
+    val manifest = PipelineManifest.fromGraphAndFlows(
+      PipelineGraph(Map("dim" -> PipelineNode.StreamingTable("dim", "delta")), Set.empty),
+      List(Flow("dim_auto_cdc", "dim", details, once = once)),
+    )
+    PipelineProtoEncoder
+      .definitions(graphId, manifest)
+      .map(reparse)
+      .filter(_.hasDefineFlow)
+      .map(_.getDefineFlow)
+      .find(_.getFlowName == "dim_auto_cdc")
+      .get
+
+  private val autoCdcFlow = autoCdcDefinitions(
+    FlowDetails.AutoCdc(
+      source = "bronze.cdc",
+      keys = List(Ex.Col("id"), Ex.Col("region")),
+      sequenceBy = Ex.Col("seq"),
+      applyAsDeletes = Some(Ex.Fn("=", List(Ex.Col("op"), Ex.Lit(LitValue.Str("DELETE"))))),
+      applyAsTruncates = Some(Ex.Fn("=", List(Ex.Col("op"), Ex.Lit(LitValue.Str("TRUNCATE"))))),
+      columnList = List(Ex.Col("id"), Ex.Col("region"), Ex.Col("name")),
+      ignoreNullUpdatesColumnList = List(Ex.Col("name")),
+      ignoreNullUpdatesExceptColumnList = List(Ex.Col("seq")),
+      scdType = ScdType.Scd1,
+    )
+  )
+
   private val externalManifest = PipelineManifest.fromGraph(
     PipelineGraph(
       Map(
@@ -58,7 +95,7 @@ object PipelineProtoEncoderSpec extends ZIOSpecDefault:
       )
     },
     test("source schema is emitted for file sources but suppressed for rate") {
-      import dev.sdp.core.algebra.Rel
+
       val json = AlgebraProtoEncoder.relation(
         Rel.DataSource("json", Map("path" -> "/in"), streaming = true, schemaDdl = Some("id BIGINT, v STRING"))
       )
@@ -150,29 +187,117 @@ object PipelineProtoEncoderSpec extends ZIOSpecDefault:
       val b = PipelineProtoEncoder.definitions(graphId, manifest).map(_.toByteArray.toList)
       assertTrue(a == b)
     },
-    test("an AUTO CDC flow is gated: encoding throws a readable UnsupportedWireFeature") {
-      import dev.sdp.core.algebra.Ex
-      val cdcManifest = PipelineManifest.fromGraphAndFlows(
-        PipelineGraph(Map("dim" -> PipelineNode.StreamingTable("dim", "delta")), Set.empty),
-        List(Flow(
-          "dim_auto_cdc", "dim",
-          FlowDetails.AutoCdc("bronze.cdc", List(Ex.Col("id")), Ex.Col("seq")),
-        )),
-      )
-      val thrown =
-        try { PipelineProtoEncoder.definitions(graphId, cdcManifest); None }
-        catch { case e: UnsupportedWireFeature => Some(e.getMessage) }
+    test("an AUTO CDC flow encodes every SCD1-era field of AutoCdcFlowDetails (S1)") {
+      val details = autoCdcFlow.getAutoCdcFlowDetails
+      def names(l: java.util.List[sc.Expression]) =
+        l.asScala.toList.map(_.getUnresolvedAttribute.getUnparsedIdentifier)
       assertTrue(
-        thrown.exists(_.contains("not encoded on the wire yet")),
-        thrown.exists(_.contains("dim_auto_cdc")),
-        thrown.exists(_.contains("validate/manifest work offline")),
-        // The message must describe the REAL pin (4.2.0), not the 4.1.2 era.
-        thrown.exists(_.contains("4.2.0")),
-        thrown.forall(!_.contains("pins 4.1.2")),
+        // the oneof branch itself — a WriteRelation branch would be silent corruption
+        autoCdcFlow.getDetailsCase == sc.PipelineCommand.DefineFlow.DetailsCase.AUTO_CDC_FLOW_DETAILS,
+        autoCdcFlow.getFlowName == "dim_auto_cdc",
+        autoCdcFlow.getTargetDatasetName == "dim",
+        autoCdcFlow.getDataflowGraphId == graphId,
+        // field 1: the source is a NAME (the server parses it as a table
+        // identifier and reads it as a stream), not a relation
+        details.getSource == "bronze.cdc",
+        names(details.getKeysList) == List("id", "region"),       // 2
+        details.getSequenceBy.getUnresolvedAttribute.getUnparsedIdentifier == "seq", // 3
+        details.getApplyAsDeletes.getUnresolvedFunction.getFunctionName == "=",      // 6
+        details.getApplyAsTruncates.getUnresolvedFunction.getFunctionName == "=",    // 7
+        names(details.getColumnListList) == List("id", "region", "name"),            // 8
+        details.getExceptColumnListList.isEmpty,                                     // 9
+        details.getStoredAsScdType == sc.PipelineCommand.DefineFlow.SCDType.SCD_TYPE_1, // 10
+        names(details.getIgnoreNullUpdatesColumnListList) == List("name"),           // 14
+        names(details.getIgnoreNullUpdatesExceptColumnListList) == List("seq"),      // 15
       )
     },
+    test("the AUTO CDC field numbers are the ones the committed inventory names") {
+      // Ties the encode to `spark-connect-inventory.txt` (the drift-gated
+      // snapshot): a renumbered or renamed upstream field breaks here, not in
+      // production. SCD2's track-history lists (11/12) must NOT exist yet —
+      // they are master-only, roadmap S2.
+      val d      = sc.PipelineCommand.DefineFlow.AutoCdcFlowDetails.getDescriptor
+      val flowD  = sc.PipelineCommand.DefineFlow.getDescriptor
+      def num(n: String) = Option(d.findFieldByName(n)).map(_.getNumber)
+      assertTrue(
+        num("source") == Some(1),
+        num("keys") == Some(2),
+        num("sequence_by") == Some(3),
+        num("apply_as_deletes") == Some(6),
+        num("apply_as_truncates") == Some(7),
+        num("column_list") == Some(8),
+        num("except_column_list") == Some(9),
+        num("stored_as_scd_type") == Some(10),
+        num("ignore_null_updates_column_list") == Some(14),
+        num("ignore_null_updates_except_column_list") == Some(15),
+        num("track_history_column_list").isEmpty,
+        num("track_history_except_column_list").isEmpty,
+        Option(d.findEnumTypeByName("SCDType")).isEmpty, // the enum is on DefineFlow
+        flowD.findFieldByName("auto_cdc_flow_details").getNumber == 10,
+        flowD.findFieldByName("once").getNumber == 8,
+      )
+    },
+    test("an AUTO CDC flow omits every field the author did not ask for") {
+      // Absence is load-bearing: the server reads optional fields by presence
+      // (`Option.when(autoCdcDetails.hasApplyAsDeletes)`), and an empty repeated
+      // column_list means "all columns", not "no columns".
+      val bare = autoCdcDefinitions(
+        FlowDetails.AutoCdc("bronze.cdc", List(Ex.Col("id")), Ex.Col("seq"))
+      ).getAutoCdcFlowDetails
+      assertTrue(
+        !bare.hasApplyAsDeletes,
+        !bare.hasApplyAsTruncates,
+        bare.getColumnListList.isEmpty,
+        bare.getExceptColumnListList.isEmpty,
+        bare.getIgnoreNullUpdatesColumnListList.isEmpty,
+        bare.getIgnoreNullUpdatesExceptColumnListList.isEmpty,
+        // SCD type is always explicit — SCD_TYPE_UNSPECIFIED would also mean
+        // SCD1 server-side, but saying so is the conforming shape
+        bare.getStoredAsScdType == sc.PipelineCommand.DefineFlow.SCDType.SCD_TYPE_1,
+      )
+    },
+    test("a once=false flow leaves DefineFlow.once ABSENT, not false (rows ONCE-1/ONCE-2)") {
+      // The server checks PRESENCE: `if (flow.hasOnce) throw
+      // DEFINE_FLOW_ONCE_OPTION_NOT_SUPPORTED` (PipelinesHandler.defineFlow,
+      // 4.2.0 and master HEAD alike). setOnce(false) would therefore break
+      // EVERY ordinary flow. Nothing asserted this before — see
+      // BehaviorInventory row ONCE-2.
+      val relationFlows = commands.filter(_.hasDefineFlow).map(_.getDefineFlow)
+      val cdcBare = autoCdcDefinitions(
+        FlowDetails.AutoCdc("bronze.cdc", List(Ex.Col("id")), Ex.Col("seq"))
+      )
+      assertTrue(
+        relationFlows.nonEmpty,
+        relationFlows.forall(f => !f.hasOnce),
+        !cdcBare.hasOnce,
+      )
+    },
+    test("a once=true AUTO CDC flow sets the field (presence is the request)") {
+      val once = autoCdcDefinitions(
+        FlowDetails.AutoCdc("bronze.cdc", List(Ex.Col("id")), Ex.Col("seq")),
+        once = true,
+      )
+      assertTrue(once.hasOnce, once.getOnce)
+    },
+    test("a subquery in an AUTO CDC expression is refused, not silently dropped") {
+      // A standalone Expression has no Relation to carry WithRelations
+      // references, so a subquery's plan id would dangle. (The server is
+      // stricter still: keys must be plain identifiers.)
+      val thrown =
+        try
+          val _ = autoCdcDefinitions(
+            FlowDetails.AutoCdc(
+              "bronze.cdc",
+              List(Ex.Col("id")),
+              Ex.Subquery(Rel.NamedTable("other", streaming = false), SubqueryKind.Scalar),
+            )
+          )
+          None
+        catch { case e: UnsupportedWireFeature => Some(e.getMessage) }
+      assertTrue(thrown.exists(_.contains("subquery")))
+    },
     test("a once=true WriteRelation flow encodes DefineFlow.once on the wire") {
-      import dev.sdp.core.algebra.Rel
+
       val onceManifest = PipelineManifest.fromGraphAndFlows(
         PipelineGraph(
           Map(

@@ -113,7 +113,7 @@ def sqlStreamingTable(name: String)(sql: String): GraphFragment =
   )
 
 // ====================================================================
-// AUTO CDC (Spark 4.2, gated) — apply_changes / SCD merge flows
+// AUTO CDC (needs a Spark 4.2+ server) — apply_changes / SCD merge flows
 // ====================================================================
 
 /** A pipeline-managed *streaming table* shell, declared with no defining flow
@@ -136,9 +136,10 @@ def createStreamingTable(name: String): GraphFragment =
   * read/edge of this flow, so a missing source is caught by the existing
   * dangling-dependency validator.
   *
-  * **Gated** at the wire: `validate`/`manifest` work offline today, but
-  * `run`/`dry-run` fail with a clear error until the wire client bumps to
-  * `spark-connect-common >= 4.2.0` (see `docs/dsl.md`).
+  * **Needs a Spark 4.2+ server.** The flow encodes on the wire unconditionally
+  * (`DefineFlow.auto_cdc_flow_details`); the server-version handshake refuses
+  * an older server before anything is registered, because proto3 would silently
+  * strip the branch (see `docs/dsl.md`).
   *
   * @param storedAsScdType only `1` (SCD type 1) is supported, matching the
   *                        proto's single `SCD_TYPE_1`.

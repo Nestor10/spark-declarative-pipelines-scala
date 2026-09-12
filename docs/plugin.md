@@ -62,10 +62,12 @@ write the pipeline object.
 | `sdpSchemasPackage` | setting | Package of the generated aliases (default `sdp.schemas`) |
 | `sdpCatalogTables` | setting | Remote tables to import (schema via the server's analyzer), e.g. `Seq("sales.orders")` |
 
-> **AUTO CDC (Spark 4.2, gated):** `sdpValidate` / `sdpManifest` fully support
-> pipelines containing `createAutoCdcFlow` today (offline). `sdpRun` /
-> `sdpDryRun` fail with a clear error on such a pipeline because this build does
-> not emit `AutoCdcFlowDetails` on the wire yet — see `docs/dsl.md`.
+> **AUTO CDC needs a Spark 4.2+ server.** `createAutoCdcFlow` pipelines encode
+> on the wire and run like any other; `sdpValidate` / `sdpManifest` stay offline
+> and work against any server or none. Point `sdpRun` / `sdpDryRun` at an older
+> server and the handshake below refuses the pipeline before registering
+> anything — `… needs a Spark 4.2+ server; sc://host:port reports 4.1.2`. See
+> `docs/dsl.md`.
 
 ## Server-version handshake
 

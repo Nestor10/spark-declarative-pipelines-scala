@@ -30,10 +30,11 @@ object PipelinesRegistration:
     case ServerRejected(detail: String)
 
     /** The manifest carries a construct the pinned wire client cannot encode
-      * (see [[UnsupportedWireFeature]] — AUTO CDC before the 4.2 proto). An
-      * expected, renderable verdict: `validate`/`manifest` accepted the graph
-      * offline, so the author meets it here and must read a sentence, not a
-      * defect trace. */
+      * (see [[UnsupportedWireFeature]]). An expected, renderable verdict:
+      * `validate`/`manifest` accepted the graph offline, so the author meets it
+      * here and must read a sentence, not a defect trace. AUTO CDC left this
+      * category at roadmap S1 — it now encodes, and a too-old *server* is
+      * [[ServerTooOld]]'s business. */
     case UnsupportedWire(detail: String)
 
     /** The server is older than a construct the pipeline uses — caught by the

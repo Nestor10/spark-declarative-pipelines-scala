@@ -60,6 +60,31 @@ object AlgebraProtoEncoder:
       ctx.references.foreach(w.addReferences)
       sc.Relation.newBuilder().setWithRelations(w).build()
 
+  /** Encode a **standalone** expression — one that travels on the wire without
+    * a relation of its own. AUTO CDC is the case that needs it:
+    * `AutoCdcFlowDetails` carries bare `Expression`s (keys, sequence_by,
+    * conditions, column lists) with no `Relation` to hang `WithRelations`
+    * references on.
+    *
+    * A subquery inside such an expression is therefore **not representable** —
+    * its plan-id reference would have nowhere to live and the server would see
+    * a dangling `SubqueryExpression`. The encoder refuses loudly instead of
+    * silently dropping it. (In practice the server is stricter still: AUTO CDC
+    * keys and column lists must resolve to plain `UnresolvedAttribute`s, or
+    * `PipelinesHandler.buildAutoCdcFlow` fails with
+    * `AUTOCDC_NON_COLUMN_IDENTIFIER`.)
+    */
+  def expression(ex: Ex, planIdBase: Long = 0L): sc.Expression =
+    given ctx: Ctx = new Ctx(planIdBase)
+    val encoded = exGo(ex)
+    if ctx.references.isEmpty then encoded
+    else
+      throw new UnsupportedWireFeature(
+        "a subquery cannot be encoded in a standalone expression (AUTO CDC keys, " +
+          "sequenceBy, conditions and column lists): there is no relation on the wire " +
+          "to carry the subquery's plan reference"
+      )
+
   /** Every relation node gets a `common.plan_id` — like every DataFrame-built
     * client plan. The field looks optional but is load-bearing server-side:
     * SDP's FlowAnalysis propagates PLAN_ID_TAG through resolution, and plans
