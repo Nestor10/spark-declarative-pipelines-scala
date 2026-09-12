@@ -20,7 +20,13 @@
 #   4. fetch pipelines.proto from apache/spark master and list message/field
 #      names the committed inventory has never seen — the earliest possible
 #      intelligence about the NEXT release (this is how SCD_TYPE_2 was spotted);
-#   5. open-or-update exactly ONE GitHub issue carrying all of it.
+#   5. ask Central whether `iceberg-spark-runtime-4.2_2.13` has been RELEASED.
+#      The AUTO CDC e2e (`IcebergAutoCdcE2eSpec`, rows CDC-5/CDC-6) can only run
+#      against a merge-capable table format, and Iceberg is the only OSS one —
+#      but it has no 4.2 release, so that suite pins an Apache SNAPSHOT jar.
+#      Snapshots are mutable and eventually swept, so the day a release exists
+#      is the day the pin must be swapped: CRITICAL PATH, not demo polish;
+#   6. open-or-update exactly ONE GitHub issue carrying all of it.
 #
 # What it deliberately does NOT do: bump the pin. protobuf-java and grpc must
 # match the chosen Spark release's own pom (DECISIONS D2); that is a human
@@ -49,6 +55,14 @@ SNAPSHOT="$REPO_ROOT/sdp/src/test/resources/spark-connect-inventory.txt"
 METADATA_URL="https://repo1.maven.org/maven2/org/apache/spark/spark-connect-common_2.13/maven-metadata.xml"
 MASTER_PROTO_URL="https://raw.githubusercontent.com/apache/spark/master/sql/connect/common/src/main/protobuf/spark/connect/pipelines.proto"
 ISSUE_LABEL="upstream-watch"
+
+# The second watched artifact: the AUTO CDC e2e's server-side fixture. It is NOT
+# a build dependency (it never appears in libraryDependencies) — it is the jar
+# `IcebergAutoCdcE2eSpec` mounts into the test container, and today it can only
+# be an Apache SNAPSHOT because no Spark-4.2 Iceberg runtime is released.
+ICEBERG_ARTIFACT="org.apache.iceberg:iceberg-spark-runtime-4.2_2.13"
+ICEBERG_METADATA_URL="https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-spark-runtime-4.2_2.13/maven-metadata.xml"
+ICEBERG_PIN_FILE="$REPO_ROOT/sdp-it/src/test/scala/dev/sdp/connect/SparkConnectTestServer.scala"
 
 PIN_OVERRIDE=""
 CANDIDATE_OVERRIDE=""
@@ -169,17 +183,67 @@ proto_intel() {
 log "reading apache/spark master pipelines.proto for early intel"
 proto_intel > "$WORK/proto-intel.txt" || true
 
-if [[ -z "$CANDIDATE" ]]; then
+# --- 5. the AUTO CDC e2e fixture: has Iceberg released a 4.2 runtime yet? ----
+# Absence is the normal answer and is NOT an error: `curl -f` on a missing
+# maven-metadata.xml is a 404, which here means "still unreleased, the snapshot
+# pin stands". Presence is the headline — a mutable snapshot is a temporary
+# arrangement and this is the trigger to end it.
+ICEBERG_RELEASED=false
+iceberg_section() {
+  local pinned versions
+  pinned="$(sed -nE 's/.*"(iceberg-spark-runtime-4\.2_2\.13-[^"]+\.jar)".*/\1/p' "$ICEBERG_PIN_FILE" | head -1)"
+  [[ -n "$pinned" ]] || pinned="(could not read the pin from ${ICEBERG_PIN_FILE#"$REPO_ROOT"/})"
+  echo "- watched: \`$ICEBERG_ARTIFACT\`"
+  echo "- e2e fixture pin: \`$pinned\` — an Apache **snapshot**, mounted into the container by \`IcebergAutoCdcE2eSpec\` (rows CDC-5/CDC-6). Not a build dependency."
+  if ! curl -sSfL --max-time 60 "$ICEBERG_METADATA_URL" -o "$WORK/iceberg-metadata.xml" 2> /dev/null; then
+    echo "- Maven Central: **not yet released**, snapshot in use — no swap to make."
+    return 0
+  fi
+  versions="$(grep -oE '<version>[^<]+</version>' "$WORK/iceberg-metadata.xml" \
+    | sed -E 's#</?version>##g' | sort -V | paste -sd',' - | sed 's/,/, /g')"
+  if [[ -z "$versions" ]]; then
+    echo "- Maven Central: metadata exists but lists no versions — treating as **not yet released**, snapshot in use."
+    return 0
+  fi
+  ICEBERG_RELEASED=true
+  echo "- Maven Central: **RELEASED** — $versions"
+  echo "- **CRITICAL PATH.** Iceberg is the only OSS table format that implements"
+  echo "  \`SupportsRowLevelOperations\`, i.e. the only way AUTO CDC materializes at all"
+  echo "  (rows CDC-4/CDC-5/CDC-6). Swap the pinned snapshot URL in"
+  echo "  \`SparkConnectTestServer.Iceberg42\` for the release, re-run"
+  echo "  \`SDP_INTEGRATION=1 sbt 'sdpIt/Test/runMain dev.sdp.connect.IcebergAutoCdcE2eSpec'\`,"
+  echo "  and update the snapshot caveat in \`docs/dsl.md\` + \`docs/developing.md\`."
+  echo "  This script does not swap it: the release may move more than the coordinate."
+}
+
+log "checking Maven Central for a released $ICEBERG_ARTIFACT (the AUTO CDC e2e fixture pin)"
+iceberg_section > "$WORK/iceberg.txt" || true
+
+if [[ -z "$CANDIDATE" && "$ICEBERG_RELEASED" != true ]]; then
   log "no newer spark-connect-common than $PIN — no drift."
+  log "$ICEBERG_ARTIFACT: not yet released on Central, snapshot pin stands."
+  echo "--- iceberg-spark-runtime-4.2 (AUTO CDC e2e fixture) ---"
+  cat "$WORK/iceberg.txt"
   echo "--- master pipelines.proto intel (informational; no issue filed) ---"
   cat "$WORK/proto-intel.txt"
   exit 0
 fi
 
-log "candidate: $CANDIDATE ($CANDIDATE_KIND)"
+# `cond && log …` would be a `set -e` landmine as a standalone statement: a false
+# condition makes the AND-list return non-zero and the script would exit here.
+if [[ -n "$CANDIDATE" ]]; then log "candidate: $CANDIDATE ($CANDIDATE_KIND)"; fi
+if [[ "$ICEBERG_RELEASED" == true ]]; then
+  log "$ICEBERG_ARTIFACT is RELEASED — the e2e snapshot pin can be swapped"
+fi
 
 # --- 3. inventory diff against the candidate ------------------------------
 inventory_section() {
+  if [[ -z "$CANDIDATE" ]]; then
+    # Reachable when the report exists only because of the Iceberg trigger: the
+    # Spark pin is current, so there is nothing to render a candidate against.
+    echo "(skipped: the spark-connect-common pin is current)"
+    return 0
+  fi
   if [[ "$RUN_INVENTORY" != true ]]; then
     echo "(skipped: --no-inventory)"
     return 0
@@ -255,16 +319,26 @@ if [[ "$OVERRIDE_FAILED" == true ]]; then
 fi
 
 # --- 5. the report + the single issue -------------------------------------
-TITLE="upstream-watch: spark-connect-common $CANDIDATE available (we pin $PIN)"
+if [[ -n "$CANDIDATE" && "$ICEBERG_RELEASED" == true ]]; then
+  TITLE="upstream-watch: spark-connect-common $CANDIDATE available (we pin $PIN); iceberg-spark-runtime-4.2 RELEASED"
+elif [[ -n "$CANDIDATE" ]]; then
+  TITLE="upstream-watch: spark-connect-common $CANDIDATE available (we pin $PIN)"
+else
+  TITLE="upstream-watch: iceberg-spark-runtime-4.2_2.13 RELEASED — swap the AUTO CDC e2e snapshot pin"
+fi
 {
-  echo "Automated currency check (\`scripts/upstream-watch.sh\`). **The pin is never bumped"
+  echo "Automated currency check (\`scripts/upstream-watch.sh\`). **Nothing is bumped"
   echo "automatically** — protobuf-java and grpc must match the chosen Spark release's own"
   echo "pom (DECISIONS D2), which is a human judgment."
   echo
-  echo "## Version delta"
+  echo "## Version delta — spark-connect-common"
   echo
   echo "- pinned: \`$PIN\`"
-  echo "- candidate: \`$CANDIDATE\` ($CANDIDATE_KIND)"
+  if [[ -n "$CANDIDATE" ]]; then
+    echo "- candidate: \`$CANDIDATE\` ($CANDIDATE_KIND)"
+  else
+    echo "- candidate: none — the pin is current"
+  fi
   if [[ -s "$WORK/newer-stable.txt" ]]; then
     echo "- newer releases: $(commas "$WORK/newer-stable.txt")"
   else
@@ -274,7 +348,15 @@ TITLE="upstream-watch: spark-connect-common $CANDIDATE available (we pin $PIN)"
     echo "- newer previews/RCs (reported, not normally used): $(commas "$WORK/newer-pre.txt")"
   fi
   echo
-  echo "## Conformance inventory diff (\`$CANDIDATE\` vs the committed snapshot)"
+  echo "## AUTO CDC e2e fixture — iceberg-spark-runtime-4.2"
+  echo
+  cat "$WORK/iceberg.txt"
+  echo
+  if [[ -n "$CANDIDATE" ]]; then
+    echo "## Conformance inventory diff (\`$CANDIDATE\` vs the committed snapshot)"
+  else
+    echo "## Conformance inventory diff"
+  fi
   echo
   cat "$WORK/inventory-section.md"
   echo
@@ -282,12 +364,23 @@ TITLE="upstream-watch: spark-connect-common $CANDIDATE available (we pin $PIN)"
   echo
   cat "$WORK/proto-intel.txt"
   echo
-  echo "## If we take it"
-  echo
-  echo "1. match \`protobuf-java\` + \`grpc\` to the release's pom, by hand;"
-  echo "2. bump \`sparkConnectCommonVersion\` in build.sbt;"
-  echo "3. regenerate the snapshot (\`sdp/Test/runMain dev.sdp.connect.conformance.RenderInventory sdp/src/test/resources/spark-connect-inventory.txt\`) and review that diff;"
-  echo "4. re-triage any new \`Relation\`/\`Expression\` entries in \`ConnectTiers\`."
+  if [[ -n "$CANDIDATE" ]]; then
+    echo "## If we take spark-connect-common $CANDIDATE"
+    echo
+    echo "1. match \`protobuf-java\` + \`grpc\` to the release's pom, by hand;"
+    echo "2. bump \`sparkConnectCommonVersion\` in build.sbt;"
+    echo "3. regenerate the snapshot (\`sdp/Test/runMain dev.sdp.connect.conformance.RenderInventory sdp/src/test/resources/spark-connect-inventory.txt\`) and review that diff;"
+    echo "4. re-triage any new \`Relation\`/\`Expression\` entries in \`ConnectTiers\`."
+    echo
+  fi
+  if [[ "$ICEBERG_RELEASED" == true ]]; then
+    echo "## Swapping the Iceberg pin"
+    echo
+    echo "1. replace the snapshot URL in \`SparkConnectTestServer.Iceberg42\` with the released jar;"
+    echo "2. \`SDP_INTEGRATION=1 sbt 'sdpIt/Test/runMain dev.sdp.connect.IcebergAutoCdcE2eSpec'\` — CDC-5/CDC-6 must stay green;"
+    echo "3. drop the \"unreleased snapshot\" caveats in \`docs/dsl.md\` and \`docs/developing.md\`;"
+    echo "4. consider whether \`../sdp-example\`'s demo stack should move to the same release."
+  fi
 } > "$WORK/issue-body.md"
 
 if [[ "$FILE_ISSUE" != true ]]; then

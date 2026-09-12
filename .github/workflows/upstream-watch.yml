@@ -1,11 +1,13 @@
-# Weekly Spark Connect currency check.
+# Weekly upstream currency check: the Spark Connect pin, and the AUTO CDC e2e's
+# Iceberg fixture jar (unreleased for Spark 4.2, so the suite pins an Apache
+# snapshot — a release is the trigger to swap it).
 #
 # All the logic lives in `scripts/upstream-watch.sh` so it can be run (and
 # debugged) locally — this workflow only supplies a JVM, sbt, and a token. It
-# reports; it NEVER bumps the pin: protobuf-java and grpc have to match the
+# reports; it NEVER bumps anything: protobuf-java and grpc have to match the
 # chosen Spark release's own pom (DECISIONS D2), and that is a human judgment.
 #
-# No newer version than the pin ⇒ the job succeeds quietly and files nothing.
+# Nothing newer than the pins ⇒ the job succeeds quietly and files nothing.
 name: upstream-watch
 
 on:

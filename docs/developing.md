@@ -220,6 +220,14 @@ the earliest possible intelligence about the next release. With drift, it opens-
 issue labelled `upstream-watch`; with none, it exits 0 silently. It never bumps the pin —
 `protobuf-java`/`grpc` must match the release's own pom (D2), which is a human judgment.
 
+It watches a **second** artifact for a different reason:
+`org.apache.iceberg:iceberg-spark-runtime-4.2_2.13`. There is no release of it, which is why
+`IcebergAutoCdcE2eSpec` pins an Apache *snapshot* jar — and a snapshot is mutable and
+eventually swept, so the day a release appears is the day that pin must be swapped. Since
+Iceberg is the only OSS format that makes AUTO CDC materialize at all, the report flags it as
+**critical path** rather than housekeeping. Same mechanism as the Spark pin: one issue, never
+an automatic bump. Today it reports `not yet released, snapshot in use` and exits 0.
+
 Two mechanics worth knowing before touching it:
 
 - The candidate render works because `build.sbt` reads the version from a **launch-time system
