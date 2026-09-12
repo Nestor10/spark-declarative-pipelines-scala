@@ -4,7 +4,7 @@ import java.net.{URL, URLClassLoader}
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path}
 
-import dev.sdp.connect.{AlgebraProtoEncoder, CatalogSeeder, PipelinesRegistration, PlanAnalysis, TransportConfig}
+import dev.sdp.connect.{AlgebraProtoEncoder, CatalogSeeder, PipelinesRegistration, PlanAnalysis}
 import dev.sdp.connect.app.ValidationRendering
 import dev.sdp.core.GraphFragment
 import sbt.*
@@ -40,6 +40,18 @@ object SparkPipelinesPlugin extends AutoPlugin {
   override def requires: Plugins      = plugins.JvmPlugin
 
   object autoImport {
+    /** The typed environment descriptor, auto-imported so `build.sbt` can write
+      * `SdpTarget(...)` / `SdpTarget.userScopedDev(...)` with no import. */
+    type SdpTarget = dev.sdp.plugin.SdpTarget
+    val SdpTarget: dev.sdp.plugin.SdpTarget.type = dev.sdp.plugin.SdpTarget
+
+    val sdpTargets = settingKey[Map[String, SdpTarget]](
+      "Named deployment environments (dev/stage/prod) as typed SdpTarget values — the descriptor " +
+        "for `sdpRunOn`/`sdpDryRunOn`/`sdpSeedOn <target>`. A target varies WHERE a pipeline runs " +
+        "(endpoint, catalog/database, storage, TLS/token), never WHAT it is: the manifest is " +
+        "target-independent, so dev and prod run identical bytes. Default empty. Validated when a " +
+        "target is USED, not at build load."
+    )
     val sdpConnectEndpoint = settingKey[String](
       "Spark Connect gRPC endpoint, e.g. sc://localhost:15002."
     )
@@ -199,15 +211,10 @@ object SparkPipelinesPlugin extends AutoPlugin {
       pushOrRun(
         log = streams.value.log,
         conv = fileConverter.value,
-        endpoint = sdpConnectEndpoint.value,
-        storage = sdpStorageRoot.value,
+        conn = TargetResolution.base(baseConnection.value),
         manifestRef = sdpManifest.value,
         dry = sdpPushDryRun.value,
         timeoutSeconds = sdpRunTimeout.value,
-        defaultCatalog = sdpDefaultCatalog.value,
-        defaultDatabase = sdpDefaultDatabase.value,
-        transport = transportConfig(sdpConnectUseTls.value, sdpConnectToken.value, sdpConnectDeadline.value),
-        versionCheck = sdpVersionCheck.value,
       )
     },
 
@@ -220,21 +227,23 @@ object SparkPipelinesPlugin extends AutoPlugin {
       pushOrRun(
         log = streams.value.log,
         conv = fileConverter.value,
-        endpoint = sdpConnectEndpoint.value,
-        storage = sdpStorageRoot.value,
+        conn = TargetResolution.base(baseConnection.value),
         manifestRef = sdpManifest.value,
         dry = false,
         timeoutSeconds = sdpRunTimeout.value,
-        defaultCatalog = sdpDefaultCatalog.value,
-        defaultDatabase = sdpDefaultDatabase.value,
-        transport = transportConfig(sdpConnectUseTls.value, sdpConnectToken.value, sdpConnectDeadline.value),
-        versionCheck = sdpVersionCheck.value,
       )
     },
 
     // Offline inner-loop verdict: evaluate + assemble + validate, print the
     // result, write NOTHING. Uncached so `~sdpValidate` re-runs every save.
     // Shares the classload-eval path with sdpManifest (the boundary is strings).
+    //
+    // P1, STRUCTURALLY: neither this task nor `sdpManifest` mentions
+    // `sdpTargets`, `sdpConnectEndpoint` or any other connection setting — and
+    // must never start. A target varies WHERE a pipeline runs, never WHAT it
+    // is, so the manifest cannot depend on one; that is what makes "the hash
+    // you validated in dev is the hash prod runs" a build property instead of
+    // a promise, and it also keeps the cached task's key honest.
     sdpValidate := Def.uncached {
       val log = streams.value.log
       val conv = fileConverter.value
@@ -252,15 +261,10 @@ object SparkPipelinesPlugin extends AutoPlugin {
       pushOrRun(
         log = streams.value.log,
         conv = fileConverter.value,
-        endpoint = sdpConnectEndpoint.value,
-        storage = sdpStorageRoot.value,
+        conn = TargetResolution.base(baseConnection.value),
         manifestRef = sdpManifest.value,
         dry = true,
         timeoutSeconds = sdpRunTimeout.value,
-        defaultCatalog = sdpDefaultCatalog.value,
-        defaultDatabase = sdpDefaultDatabase.value,
-        transport = transportConfig(sdpConnectUseTls.value, sdpConnectToken.value, sdpConnectDeadline.value),
-        versionCheck = sdpVersionCheck.value,
       )
     },
 
@@ -268,14 +272,9 @@ object SparkPipelinesPlugin extends AutoPlugin {
       watchLoop(
         log = streams.value.log,
         conv = fileConverter.value,
-        endpoint = sdpConnectEndpoint.value,
-        storage = sdpStorageRoot.value,
+        conn = TargetResolution.base(baseConnection.value),
         manifestRef = sdpManifest.value,
         intervalSeconds = sdpWatchInterval.value,
-        defaultCatalog = sdpDefaultCatalog.value,
-        defaultDatabase = sdpDefaultDatabase.value,
-        transport = transportConfig(sdpConnectUseTls.value, sdpConnectToken.value, sdpConnectDeadline.value),
-        versionCheck = sdpVersionCheck.value,
       )
     },
 
@@ -288,6 +287,11 @@ object SparkPipelinesPlugin extends AutoPlugin {
     // The handshake is ON by default: the inner loop is exactly where someone
     // points a 4.2-capable client at the 4.1 container they already had running.
     sdpVersionCheck := true,
+
+    // No environments declared by default: the flat settings above ARE the
+    // single implicit target (the local container), so a build that never
+    // deploys anywhere never has to learn about targets.
+    sdpTargets := Map.empty,
 
     sdpStorageRoot   := s"file:///tmp/sdp/${name.value}",
     sdpPushDryRun    := true,
@@ -303,20 +307,11 @@ object SparkPipelinesPlugin extends AutoPlugin {
 
     // Uncached network effect: run the fixture SQL against the live server.
     sdpSeed := Def.uncached {
-      val log        = streams.value.log
-      val statements = sdpSeedStatements.value.toList
-      if statements.isEmpty then log.info("sdp: sdpSeedStatements is empty — nothing to seed.")
-      else
-        val (host, port) = parseEndpoint(sdpConnectEndpoint.value)
-        log.info(s"sdp: seeding ${statements.size} statement(s) on ${sdpConnectEndpoint.value}")
-        val transport = transportConfig(
-          sdpConnectUseTls.value,
-          sdpConnectToken.value,
-          sdpConnectDeadline.value,
-        )
-        SdpZioBridge.run(CatalogSeeder.run(host, port, statements, transport)) match
-          case Left(err) => sys.error(s"sdp: seeding failed — ${err.describe}")
-          case Right(_)  => log.info(s"sdp: seeded ${statements.size} statement(s).")
+      seed(
+        log = streams.value.log,
+        conn = TargetResolution.base(baseConnection.value),
+        statements = sdpSeedStatements.value.toList,
+      )
     },
 
     // Writes into checked-in sources by design (the codegen-import pattern:
@@ -348,12 +343,15 @@ object SparkPipelinesPlugin extends AutoPlugin {
             dev.sdp.core.algebra.SchemaCodegen.Entry(dataset, cols, "pipeline-inferred")
           }
 
-      // (b) remote catalog tables, schemas from the live analyzer
+      // (b) remote catalog tables, schemas from the live analyzer. Codegen is a
+      // build-time authoring aid, not a deployment, so it reads the flat
+      // settings only — there is no `sdpImportSchemasOn`.
+      val conn = TargetResolution.base(baseConnection.value)
       val catalogEntries =
         val tables = sdpCatalogTables.value.toList
         if tables.isEmpty then Nil
         else
-          val (host, port) = parseEndpoint(sdpConnectEndpoint.value)
+          val (host, port) = parseEndpoint(conn.endpoint)
           tables.map { table =>
             SdpZioBridge.run(
               PlanAnalysis.analyzeSchema(
@@ -362,11 +360,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
                 AlgebraProtoEncoder.relation(
                   dev.sdp.core.algebra.Rel.NamedTable(table, streaming = false)
                 ),
-                transportConfig(
-                  sdpConnectUseTls.value,
-                  sdpConnectToken.value,
-                  sdpConnectDeadline.value,
-                ),
+                conn.transport,
               )
             ) match
               case Left(err) => sys.error(s"sdp: catalog import failed for '$table' — ${err.describe}")
@@ -387,6 +381,30 @@ object SparkPipelinesPlugin extends AutoPlugin {
       )
       log.info(s"sdp: wrote ${entries.size} schema alias(es) to $out")
     },
+  )
+
+  /** The flat connection settings as ONE value — the single place `build.sbt`'s
+    * `sdpConnectEndpoint`/`sdpStorageRoot`/`sdpDefault*`/`sdpConnect*`/
+    * `sdpVersionCheck` are read.
+    *
+    * Every network task derives its [[ResolvedConnection]] from this, either
+    * directly (`TargetResolution.base`) or folded with a named [[SdpTarget]]
+    * (`TargetResolution.select`), so there is exactly one resolution rule and
+    * exactly one task body per operation. Reading the settings in one
+    * `Def.setting` also keeps the eight `.value`s from being re-typed at every
+    * call site, which is how they drifted before.
+    */
+  private lazy val baseConnection: Def.Initialize[BaseConnection] = Def.setting(
+    BaseConnection(
+      endpoint = sdpConnectEndpoint.value,
+      storageRoot = sdpStorageRoot.value,
+      defaultCatalog = sdpDefaultCatalog.value,
+      defaultDatabase = sdpDefaultDatabase.value,
+      useTls = sdpConnectUseTls.value,
+      token = sdpConnectToken.value,
+      deadlineSeconds = sdpConnectDeadline.value,
+      versionCheck = sdpVersionCheck.value,
+    )
   )
 
   /** Proto DataType kind names (lower-cased KindCase) → ColType. */
@@ -484,16 +502,6 @@ object SparkPipelinesPlugin extends AutoPlugin {
         sys.error(s"sdp: evaluating '$fqn'.pipeline failed — ${cause.getClass.getName}: ${cause.getMessage}")
     finally loader.close()
 
-  /** Transport settings → the connect [[TransportConfig]]. Plaintext + anonymous
-    * unless the build asks otherwise; an empty token means anonymous, and the
-    * token is never logged (TransportConfig redacts it in `toString`). */
-  private def transportConfig(useTls: Boolean, token: String, deadlineSeconds: Int): TransportConfig =
-    TransportConfig(
-      useTls = useTls,
-      token = Some(token).map(_.trim).filter(_.nonEmpty),
-      deadlineSeconds = deadlineSeconds.toLong,
-    )
-
   /** `sc://host:port` → (host, port), with a readable failure. */
   private def parseEndpoint(endpoint: String): (String, Int) =
     endpoint match
@@ -501,32 +509,45 @@ object SparkPipelinesPlugin extends AutoPlugin {
       case other =>
         sys.error(s"sdp: sdpConnectEndpoint must look like sc://host:port, got '$other'")
 
-  /** Shared body for `sdpPush` (dry per setting) and `sdpRun`
-    * (dry = false). Loads the manifest, registers + runs against the server,
-    * and surfaces the run's events (validation diagnostics for a dry run;
-    * flow progress + termination for a real one). */
-  private def pushOrRun(
-      log: sbt.util.Logger,
+  /** Read + parse the manifest a network task is about to register. */
+  private def readManifest(
       conv: xsbti.FileConverter,
-      endpoint: String,
-      storage: String,
       manifestRef: HashedVirtualFileRef,
-      dry: Boolean,
-      timeoutSeconds: Int,
-      defaultCatalog: String = "",
-      defaultDatabase: String = "",
-      transport: TransportConfig = TransportConfig.plaintext,
-      versionCheck: Boolean = true,
-  ): Unit =
+  ): dev.sdp.core.PipelineManifest =
     val manifestPath = conv.toPath(manifestRef)
     val manifestText = new String(Files.readAllBytes(manifestPath), UTF_8)
-    val manifest = dev.sdp.core.PipelineManifest
+    dev.sdp.core.PipelineManifest
       .parse(manifestText)
       .fold(err => sys.error(s"sdp: unreadable manifest $manifestPath: $err"), identity)
 
-    val (host, port) = parseEndpoint(endpoint)
+  /** THE shared body for `sdpPush` (dry per setting), `sdpDryRun`, `sdpRun` and
+    * their target-addressed `*On` forms. Loads the manifest, registers + runs
+    * against the server described by `conn`, and surfaces the run's events
+    * (validation diagnostics for a dry run; flow progress + termination for a
+    * real one).
+    *
+    * Everything environment-specific arrives as ONE [[ResolvedConnection]] — a
+    * named target and the flat settings differ only in how that value was
+    * produced (`TargetResolution.select` vs `.base`), never in what happens
+    * next. That is deliberate: `sdpRunOn dev` must be the same code path as
+    * `sdpRun`, or "the same bytes ran in both" stops meaning anything.
+    */
+  private def pushOrRun(
+      log: sbt.util.Logger,
+      conv: xsbti.FileConverter,
+      conn: ResolvedConnection,
+      manifestRef: HashedVirtualFileRef,
+      dry: Boolean,
+      timeoutSeconds: Int,
+  ): Unit =
+    val manifest = readManifest(conv, manifestRef)
+
+    val (host, port) = parseEndpoint(conn.endpoint)
     val verb         = if dry then "validating" else "running"
-    log.info(s"sdp: $verb ${manifest.nodes.size} dataset(s) on $endpoint (dry=$dry, storage=$storage)")
+    log.info(
+      s"sdp: $verb ${manifest.nodes.size} dataset(s) on ${conn.endpoint} " +
+        s"(${conn.origin}, dry=$dry, storage=${conn.storageRoot})"
+    )
 
     // Register (eager → graphId), then consume the run as a ZStream: each
     // event is logged live as it arrives (`.tap` — the same hook a future DAG
@@ -540,12 +561,12 @@ object SparkPipelinesPlugin extends AutoPlugin {
           host,
           port,
           manifest,
-          storage,
+          conn.storageRoot,
           dry,
-          defaultCatalog = Some(defaultCatalog).filter(_.nonEmpty),
-          defaultDatabase = Some(defaultDatabase).filter(_.nonEmpty),
-          transport = transport,
-          versionCheck = versionCheck,
+          defaultCatalog = conn.defaultCatalog,
+          defaultDatabase = conn.defaultDatabase,
+          transport = conn.transport,
+          versionCheck = conn.versionCheck,
         )
         .flatMap { handle =>
         val drain = handle.progress
@@ -579,25 +600,16 @@ object SparkPipelinesPlugin extends AutoPlugin {
   private def watchLoop(
       log: sbt.util.Logger,
       conv: xsbti.FileConverter,
-      endpoint: String,
-      storage: String,
+      conn: ResolvedConnection,
       manifestRef: HashedVirtualFileRef,
       intervalSeconds: Int,
-      defaultCatalog: String = "",
-      defaultDatabase: String = "",
-      transport: TransportConfig = TransportConfig.plaintext,
-      versionCheck: Boolean = true,
   ): Unit =
-    val manifestPath = conv.toPath(manifestRef)
-    val manifestText = new String(Files.readAllBytes(manifestPath), UTF_8)
-    val manifest = dev.sdp.core.PipelineManifest
-      .parse(manifestText)
-      .fold(err => sys.error(s"sdp: unreadable manifest $manifestPath: $err"), identity)
+    val manifest = readManifest(conv, manifestRef)
 
-    val (host, port) = parseEndpoint(endpoint)
+    val (host, port) = parseEndpoint(conn.endpoint)
     log.info(
-      s"sdp: watching ${manifest.nodes.size} dataset(s) on $endpoint — re-triggering every " +
-        s"${intervalSeconds}s (Ctrl-C to stop)"
+      s"sdp: watching ${manifest.nodes.size} dataset(s) on ${conn.endpoint} (${conn.origin}) — " +
+        s"re-triggering every ${intervalSeconds}s (Ctrl-C to stop)"
     )
 
     val cycle = zio.ZIO.scoped {
@@ -606,12 +618,12 @@ object SparkPipelinesPlugin extends AutoPlugin {
           host,
           port,
           manifest,
-          storage,
+          conn.storageRoot,
           dry = false,
-          defaultCatalog = Some(defaultCatalog).filter(_.nonEmpty),
-          defaultDatabase = Some(defaultDatabase).filter(_.nonEmpty),
-          transport = transport,
-          versionCheck = versionCheck,
+          defaultCatalog = conn.defaultCatalog,
+          defaultDatabase = conn.defaultDatabase,
+          transport = conn.transport,
+          versionCheck = conn.versionCheck,
         )
         .flatMap { handle =>
         handle.progress
@@ -627,4 +639,21 @@ object SparkPipelinesPlugin extends AutoPlugin {
     SdpZioBridge.run(loop) match
       case Left(err) => sys.error(s"sdp: watch failed — ${err.describe}")
       case Right(_)  => () // unreachable under spaced(); Ctrl-C interrupts instead
+
+  /** THE shared body for `sdpSeed` and `sdpSeedOn` — fixture SQL against the
+    * server described by `conn`. Same one-value-in shape as [[pushOrRun]]. */
+  private def seed(
+      log: sbt.util.Logger,
+      conn: ResolvedConnection,
+      statements: List[String],
+  ): Unit =
+    if statements.isEmpty then log.info("sdp: sdpSeedStatements is empty — nothing to seed.")
+    else
+      val (host, port) = parseEndpoint(conn.endpoint)
+      log.info(
+        s"sdp: seeding ${statements.size} statement(s) on ${conn.endpoint} (${conn.origin})"
+      )
+      SdpZioBridge.run(CatalogSeeder.run(host, port, statements, conn.transport)) match
+        case Left(err) => sys.error(s"sdp: seeding failed — ${err.describe}")
+        case Right(_)  => log.info(s"sdp: seeded ${statements.size} statement(s).")
 }
