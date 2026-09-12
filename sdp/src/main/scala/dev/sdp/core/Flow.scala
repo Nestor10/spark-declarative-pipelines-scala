@@ -64,10 +64,31 @@ object Flow:
     }.toSet
 
   /** Every relation node in the tree, this one first (structural pre-order;
-    * does not descend into subquery expressions). Used by tree-wide checks
-    * like the inline-data size guard. */
+    * does not descend into subquery expressions — use [[allRelsDeep]] for
+    * that). */
   def allRels(relation: Rel): List[Rel] =
     relation :: AlgebraShape.of(relation).children.flatMap(allRels)
+
+  /** Every relation node in the tree INCLUDING the ones embedded in subquery
+    * expressions (`exists(...)`, `scalar(...)`, `.in(...)`).
+    *
+    * This is what a tree-wide GUARD must walk: an inline table hidden in
+    * `filter(exists(<huge inline table>))` is exactly as much inline data as a
+    * top-level one, and [[allRels]] is blind to it by construction (P3.1).
+    *
+    * Lineage does NOT need this and must not use it: [[reads]] already sees
+    * through subqueries via [[exprReads]], so descending here as well would
+    * only re-derive the same names.
+    */
+  def allRelsDeep(relation: Rel): List[Rel] =
+    val shape = AlgebraShape.of(relation)
+    relation :: (shape.children ++ shape.exprs.flatMap(subqueryRels)).flatMap(allRelsDeep)
+
+  /** Relations embedded in an expression, at any sub-expression depth. Their
+    * own subtrees are not expanded here — [[allRelsDeep]] recurses. */
+  private def subqueryRels(ex: Ex): List[Rel] =
+    val shape = AlgebraShape.of(ex)
+    shape.rels ++ shape.exprs.flatMap(subqueryRels)
 
   /** Reads hidden inside expressions: subqueries and lambda bodies. */
   private def exprReads(ex: Ex): Set[String] =

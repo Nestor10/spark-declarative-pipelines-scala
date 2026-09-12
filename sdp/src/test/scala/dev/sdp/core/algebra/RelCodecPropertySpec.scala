@@ -354,6 +354,9 @@ object RelCodecPropertySpec extends ZIOSpecDefault:
     * what makes the render an INDEPENDENT oracle for the traversal below. */
   private val ReadForm = """\(read (\S+) (?:stream|batch)\)""".r
 
+  /** Likewise the only spelling of an inline table — the guard's subject. */
+  private val LocalDataForm = """\(localdata[ )]""".r
+
   private def decodeAtom(atom: String): String =
     if atom == "~" then "" // LineCodec's reserved empty-atom sentinel
     else java.net.URLDecoder.decode(atom, java.nio.charset.StandardCharsets.UTF_8)
@@ -517,6 +520,18 @@ object RelCodecPropertySpec extends ZIOSpecDefault:
           val rendered   = RelCodec.render(rel)
           val fromRender = ReadForm.findAllMatchIn(rendered).map(m => decodeAtom(m.group(1))).toSet
           assertTrue(Flow.reads(rel) == fromRender)
+        }
+      },
+      test("law: allRelsDeep sees every inline table the codec renders") {
+        // The guard's traversal must be total over the tree the RENDERER
+        // walks — including relations in expression position, which is where
+        // the size cap used to be bypassable (`exists(<huge inline table>)`).
+        // `(localdata` is the render's only spelling of an inline table, and
+        // every atom is percent-encoded, so it cannot be forged by data.
+        check(trees) { rel =>
+          val rendered = RelCodec.render(rel)
+          val seen     = Flow.allRelsDeep(rel).count { case _: Rel.LocalData => true; case _ => false }
+          assertTrue(seen == LocalDataForm.findAllMatchIn(rendered).size)
         }
       },
       test("allRels is the structural pre-order and is closed under children") {
