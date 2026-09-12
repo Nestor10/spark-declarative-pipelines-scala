@@ -134,7 +134,7 @@ object PipelineProtoEncoder:
   /** Delta is SDP's implicit default provider — the catalog supplies it when no
     * format is sent, so it must never go on the wire (this mirrors the official
     * SDP, whose `Table.format` is `Option` and is `None` unless a user writes an
-    * explicit `USING`). Tracks the DSL's `DslMacros.DefaultFormat`. */
+    * explicit `USING`). Tracks the DSL's own default format. */
   private val DefaultTableFormat = "delta"
 
   /** Build a TABLE output, emitting `format` **only when it is a genuinely

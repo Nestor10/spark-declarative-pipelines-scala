@@ -13,7 +13,7 @@ import zio.test.*
   * (now-deleted) macro frontend during the cutover and proven equivalent.
   *
   * `RelCodec.render` is the oracle: a pure function of tree structure and the
-  * exact form the manifest embeds (render → parseTrusted). A drift in the
+  * exact form the manifest embeds (render → parse). A drift in the
   * algebra or codec changes a render and fails the matching named test.
   *
   * Coverage discipline:

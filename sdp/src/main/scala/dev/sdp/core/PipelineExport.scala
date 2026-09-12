@@ -8,7 +8,7 @@ package dev.sdp.core
   * is a DIFFERENT `Class` from the plugin's own `GraphFragment` — you cannot
   * hand the objects across the boundary directly.
   *
-  * So the boundary is the fragment STRING — exactly the contract the old TASTy
+  * So the boundary is the fragment STRING — the same contract the former TASTy
   * embedding used: each fragment is rendered with [[GraphFragment.render]] (the
   * shared line dialect) into a plain `java.lang.String`. Strings ARE shared
   * across loaders (loaded by the bootstrap loader), so an `Array[String]` is

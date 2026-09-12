@@ -5,7 +5,7 @@ import zio.*
 
 /** Assembles per-compilation-unit fragments into the canonical manifest.
   *
-  * This is the exact entry point the sbt task calls: macro-emitted fragments
+  * This is the exact entry point the sbt task calls: the evaluated fragments
   * in, validated byte-stable manifest out. The fragment merge is a pure
   * monoid fold (order-independent by construction); validation happens once,
   * after the merge, where cross-module conflicts are observable.

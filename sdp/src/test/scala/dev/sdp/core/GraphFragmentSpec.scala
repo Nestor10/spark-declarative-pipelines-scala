@@ -24,10 +24,10 @@ object GraphFragmentSpec extends ZIOSpecDefault:
       val reordered = fragment.copy(nodes = fragment.nodes.reverse)
       assertTrue(GraphFragment.render(fragment) == GraphFragment.render(reordered))
     },
-    test("parseTrusted dies on malformed input with a bug-attribution message") {
-      val result = scala.util.Try(GraphFragment.parseTrusted("not a valid line"))
+    test("a malformed line is a Left naming what went wrong") {
       assertTrue(
-        result.failed.toOption.exists(_.getMessage.contains("bug in sdp-runtime-dsl"))
+        GraphFragment.parse("not a valid line").isLeft,
+        GraphFragment.parse("node|bad%zz|table|delta").isLeft,
       )
     },
     test("empty fragment renders to the empty string and parses back") {

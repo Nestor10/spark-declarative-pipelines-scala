@@ -3,13 +3,13 @@ package dev.sdp.core.algebra
 /** The Tier-0 relational algebra: a pure Scala 3 tree that mirrors the
   * `spark.connect.Relation` wire surface, one case per supported capability.
   *
-  * This is the heart of the project. Authors (via DSL combinators, F11b)
-  * build these trees; macros embed them in TASTy; the plugin encodes them to
-  * protobuf; Spark's server analyzes them. Because the tree is a pure value
-  * with zero dependencies:
+  * This is the heart of the project. Authors build these trees with the DSL's
+  * plan-builder combinators; the plugin (or `SdpApp`) encodes them to protobuf;
+  * Spark's server analyzes them. Because the tree is a pure value with zero
+  * dependencies:
   *
-  *   - it serializes canonically (manifest v2) and travels the same TASTy
-  *     channel as everything else — no runtime evaluation, anywhere;
+  *   - it serializes canonically (manifest v2) and crosses the
+  *     plugin/library classloader boundary as that same rendered string;
   *   - equality is structural, so plans are testable like data;
   *   - the conformance matrix maps 1:1 — each case below is a claimed
   *     capability, each claim oracle-verified via `AnalyzePlan`.

@@ -4,13 +4,14 @@ import dev.sdp.core.*
 import zio.*
 import zio.test.*
 
-/** Task-3 smoke: the offline subcommand logic, tested as ZIO values (no JVM
-  * process, no container). A valid pipeline assembles; a pipeline with a
+/** The `SdpApp` surface, tested as ZIO values (no JVM process, no container):
+  * argv parsing, the dispatch table's rendered output and exit codes, and the
+  * offline subcommand logic. A valid pipeline assembles; a pipeline with a
   * dangling read fails in the typed channel with the same error rendering the
   * sbt plugin emits (Zionomicon ch. 3: expected errors are values).
   *
-  * Fragments are built straight from the core ADTs (the DSL macros produce
-  * the same `GraphFragment` shapes) so the test needs nothing but sdp-core.
+  * Fragments are built straight from the core ADTs (the DSL builds the same
+  * `GraphFragment` shapes), so the test needs nothing but `dev.sdp.core`.
   */
 object SdpAppSpec extends ZIOSpecDefault:
 

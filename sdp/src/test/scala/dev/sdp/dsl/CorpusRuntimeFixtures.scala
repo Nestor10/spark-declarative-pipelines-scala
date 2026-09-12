@@ -98,8 +98,8 @@ object CorpusRuntimeFixtures:
     )
   }
 
-  // lambda param names match the macro's author-source names (item / l,r) via
-  // the named lam/lam2 runtime escape so LamVar names render identically.
+  // explicit lambda parameter names via the named lam/lam2 escapes, so the
+  // LamVar names in the render are the author's and not the generated ones.
   val lambdasNamed: GraphFragment = materializedView("hof") {
     read.range(0L, 1L).select(
       fn("transform", col("xs"), lam("item")(item => item * lit(2))).as("doubled"),

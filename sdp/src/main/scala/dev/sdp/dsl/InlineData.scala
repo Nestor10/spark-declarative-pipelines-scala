@@ -2,23 +2,19 @@ package dev.sdp.dsl
 
 import dev.sdp.core.algebra.*
 
-/** Inline literal table support — runtime analogue of FlowExtractor's inline
-  * data path (FlowExtractor.scala lines 506–597): `spark.createDataFrame(
-  * Seq(...)).toDF(...)` → `Rel.LocalData`.
+/** Inline literal tables: `spark.createDataFrame(Seq(...)).toDF(...)` →
+  * `Rel.LocalData` (D7 — lowered to a SQL `VALUES` clause on the wire).
   *
-  * Where the macro reads tuple/literal AST cells, the runtime sees the actual
-  * values. [[InlineRows]] turns each row value into a `List[LitValue]`; the
-  * cell kinds match the macro's `litCell` (lines 510–519): Int/Long/Double/
-  * Boolean/String/Null (Scala `null`).
+  * [[InlineRows]] turns each row value into a `List[LitValue]`; the supported
+  * cell kinds are Int/Long/Double/Boolean/String/Null (Scala `null`).
   */
 trait InlineRows[A]:
   def row(a: A): List[LitValue]
 
 object InlineRows:
 
-  /** One literal cell by runtime inspection — mirrors `FlowExtractor.litCell`
-    * (FlowExtractor.scala lines 510–519). `null` → `LitValue.Null` (whose
-    * column type is taken from siblings during inference, like the macro). */
+  /** One literal cell by runtime inspection. `null` → `LitValue.Null`, whose
+    * column type is taken from its siblings during inference. */
   private def litOfAny(a: Any): LitValue = a match
     case null       => LitValue.Null
     case v: Int     => LitValue.I32(v)
@@ -33,24 +29,20 @@ object InlineRows:
 
   /** Generic derivation for tuples (multi-column rows). `Tuple` is itself a
     * `Product`, so we read its `productIterator` — each element through
-    * [[litOfAny]]. Handles mixed numeric kinds and nulls per the macro's
-    * inference (later widened in [[LocalDataBuilder]]). */
+    * [[litOfAny]]. Mixed numeric kinds and nulls are resolved by the inference
+    * in [[LocalDataBuilder]]. */
   given tupleRows[A <: Tuple]: InlineRows[A] with
     def row(a: A): List[LitValue] = a.productIterator.map(litOfAny).toList
 
-  /** Single-column rows: a bare literal value (FlowExtractor.inlineRow falls
-    * back to one cell when the term is not a tuple, lines 538–544). Provided
-    * for the cell kinds the macro recognizes. */
+  /** Single-column rows: a bare literal value, one given per cell kind. */
   given intRow: InlineRows[Int]         = (a: Int) => List(LitValue.I32(a))
   given longRow: InlineRows[Long]       = (a: Long) => List(LitValue.I64(a))
   given doubleRow: InlineRows[Double]   = (a: Double) => List(LitValue.F64(a))
   given booleanRow: InlineRows[Boolean] = (a: Boolean) => List(LitValue.Bool(a))
   given stringRow: InlineRows[String]   = (a: String) => List(LitValue.Str(a))
 
-/** Holds extracted rows awaiting `.toDF(names*)`, folding the names into the
-  * `LocalData` schema exactly as the macro does (FlowExtractor lines 644–654).
-  * Without `.toDF`, columns default to `_1.._N` (FlowExtractor line 589;
-  * macro case at line 653). */
+/** Holds the rows awaiting `.toDF(names*)`, folding the names into the
+  * `LocalData` schema. Without `.toDF`, columns default to `_1.._N`. */
 final case class InlineDf(rows: List[List[LitValue]]):
   def toDF(names: String*): Df =
     LocalDataBuilder.build(rows, Some(names.toList)) match
@@ -58,17 +50,16 @@ final case class InlineDf(rows: List[List[LitValue]]):
       case Left(msg)  => throw new IllegalArgumentException(msg)
 
   /** Use this `InlineDf` directly as a relation (no `.toDF`): columns default
-    * to `_1.._N`, matching `createDataFrame` without `.toDF` (macro line 653).
+    * to `_1.._N`, as `createDataFrame` without `.toDF` does in Spark.
     * `Df` conversion happens via [[asDf]]. */
   def asDf: Df =
     LocalDataBuilder.build(rows, None) match
       case Right(rel) => Df(rel)
       case Left(msg)  => throw new IllegalArgumentException(msg)
 
-/** Replicates `FlowExtractor.localData`/`inferColType` (FlowExtractor lines
-  * 556–597): arity check, names (`toDF` or `_1.._N`), and per-column type
-  * inference — numeric widening (I32 < I64 < F64), null takes the column type,
-  * mixed non-numeric kinds error. */
+/** Builds `Rel.LocalData`: arity check, names (`toDF` or `_1.._N`), and
+  * per-column type inference — numeric widening (I32 < I64 < F64), null takes
+  * the column type, mixed non-numeric kinds error. */
 object LocalDataBuilder:
   private val numericRank = Map(ColType.I32 -> 1, ColType.I64 -> 2, ColType.F64 -> 3)
 

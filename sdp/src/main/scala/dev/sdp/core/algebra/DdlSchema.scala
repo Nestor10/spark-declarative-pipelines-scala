@@ -7,9 +7,10 @@ package dev.sdp.core.algebra
   * "value BIGINT, seen_at TIMESTAMP, `weird name` STRING"
   * }}}
   *
-  * Pure function (Domain Core): the DSL macro calls it at compile time so a
-  * malformed string is a *positioned compile error*, and `sdpImportSchemas` /
-  * tests can exercise it without a macro in sight.
+  * Pure function (Domain Core): the DSL calls it while building the plan, so a
+  * malformed string is rejected during build-time evaluation — long before the
+  * graph reaches a cluster — and `sdpImportSchemas` / tests can exercise it
+  * directly.
   *
   * Type mapping is **gradual** (principle: gradual or bust): the checked
   * column types map exactly; any other syntactically valid Spark type
@@ -21,7 +22,7 @@ package dev.sdp.core.algebra
 object DdlSchema:
 
   /** Parse a DDL schema string into declared columns. Left = human-readable
-    * error (the macro positions it at the string literal).
+    * error naming the offending input.
     */
   def parse(ddl: String): Either[String, List[(String, ColType)]] =
     if ddl.trim.isEmpty then Left("schema DDL is empty")

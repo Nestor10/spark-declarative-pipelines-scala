@@ -20,14 +20,14 @@ import xsbti.{HashedVirtualFileRef, VirtualFile}
   * writes the canonical manifest. An invalid graph **fails the build** with
   * every accumulated error.
   *
-  * Fragment discovery is classload-eval (D10, replacing the earlier TASTy
-  * scan): the DSL is now a plain runtime plan-builder, so the plugin loads the
-  * pipeline object, calls `pipeline`, and renders each fragment to a STRING via
+  * Fragment discovery is classload-eval (D10): the DSL is a runtime
+  * plan-builder, so the plugin loads the pipeline object, calls `pipeline`, and
+  * renders each fragment to a STRING via
   * `dev.sdp.core.PipelineExport.encodeAll`. The string is the only thing that
-  * crosses the classloader boundary — exactly the contract the TASTy embedding
-  * used — so the child loader is fully isolated (no parent delegation for
-  * user/sdp classes) and `loader.close()` runs in a finally. See
-  * [[evalPipelineFragments]].
+  * crosses the classloader boundary, so the eval loader can be fully isolated —
+  * its parent is the PLATFORM loader, which holds no user or sdp classes, so
+  * nothing delegates back to the plugin's own loader — and `loader.close()`
+  * runs in a finally. See [[evalPipelineFragments]].
   *
   * The task is cached (`Def.cachedTask`): its inputs are the content-hashed
   * compiled products and classpath, its output is declared to the action
@@ -391,13 +391,15 @@ object SparkPipelinesPlugin extends AutoPlugin {
 
   /** Evaluate the user's pipeline object in an isolated child classloader and
     * recover its fragments as plain `GraphFragment`s — the D10 classload-eval
-    * that replaced the TASTy scan.
+    * introduced by D10.
     *
-    * The cross-loader boundary is the fragment STRING (the same contract the
-    * TASTy embedding used), so the child loader is built child-FIRST with the
-    * PLATFORM loader as parent — i.e. NO delegation to the plugin's own loader
-    * for user/sdp classes. That total isolation is safe precisely because
-    * nothing but `String[]` crosses back: the child's `GraphFragment` and the
+    * The cross-loader boundary is the fragment STRING, so the eval loader is
+    * built with the PLATFORM loader as its parent: ordinary parent-first
+    * delegation, but the parent holds only JDK classes, so user and sdp classes
+    * resolve from the project classpath and NEVER delegate to the plugin's own
+    * loader. (It is isolation by a bare parent, not a child-first/inverted
+    * delegation order.) That total isolation is safe precisely because nothing
+    * but `String[]` crosses back: the evaluated `GraphFragment` and the
     * plugin's `GraphFragment` are different `Class`es and never meet.
     *
     * Reflection call-chain (all inside the child loader):
@@ -426,8 +428,9 @@ object SparkPipelinesPlugin extends AutoPlugin {
       )
 
     val urls: Array[URL] = classpath.map(_.toUri.toURL).toArray
-    // Child-first, parent = platform loader: JDK classes resolve, but user/sdp
-    // classes do NOT delegate to the plugin loader — full isolation.
+    // Parent = the PLATFORM loader: JDK classes resolve through it, while
+    // user/sdp classes can only come from `urls` — so nothing delegates to the
+    // plugin's loader. Isolation by a bare parent, not by inverted delegation.
     val loader = new URLClassLoader(urls, ClassLoader.getPlatformClassLoader)
     try
       val moduleClass = loader.loadClass(fqn + "$")

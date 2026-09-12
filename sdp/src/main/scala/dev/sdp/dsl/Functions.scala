@@ -2,27 +2,22 @@ package dev.sdp.dsl
 
 import dev.sdp.core.algebra.*
 
-/** Runtime mirror of `dev.sdp.dsl.functions` (Functions.scala): the full Spark
-  * `functions` surface. Every entry lowers to `Ex.Fn(wireName, args)` exactly
-  * as the macro's `FacadeFunctions` table does (FlowExtractor.scala lines
-  * 70–86) — identity wire names except `mean` → "avg" and `pow` → "power"
-  * (Spark's own authority rule).
+/** The Spark `functions` surface (D8 — same names, same shapes Spark uses).
+  * Every entry lowers to `Ex.Fn(wireName, args)`; wire names are identity except
+  * `mean` → "avg" and `pow` → "power" (Spark's own spelling is the authority).
   *
-  * Argument lowering mirrors `FlowExtractor.fnArg` (lines 435–447): a plain
-  * Scala `Int` argument becomes `Ex.Lit(LitValue.I32(_))`, a `String` becomes
-  * `Ex.Lit(LitValue.Str(_))`, a real Scala lambda becomes `Ex.Lam(...)`. So the
-  * runtime signatures take `Int`/`String`/`Column => Column` exactly where the
-  * macro stubs (Functions.scala) do, and produce the identical `Ex.Fn` args.
+  * Argument lowering is by type: a plain Scala `Int` argument becomes
+  * `Ex.Lit(LitValue.I32(_))`, a `String` becomes `Ex.Lit(LitValue.Str(_))`, a
+  * real Scala lambda becomes `Ex.Lam(...)`.
   *
-  * Lambda parameter-name caveat: the macro captures the author's source
-  * parameter name into `LamVar`; at runtime the lambda value carries no name,
-  * so HOF facade entries synthesize the conventional names ("x"; "acc"/"x" for
-  * aggregate; "l"/"r" for zip_with). Fixtures must use those same names to stay
-  * render-identical with the macro (documented in the report).
+  * Lambda parameter names: a lambda value carries no parameter name at runtime,
+  * so the HOF entries synthesize the conventional ones ("x"; "acc"/"x" for
+  * aggregate; "l"/"r" for zip_with) and [[LambdaScope]] freshens them when
+  * lambdas nest, so an inner binding can never capture an outer reference.
   */
 object functions:
 
-  // helpers mirroring FlowExtractor.fnArg literal lowering
+  // literal-lowering helpers for the by-type argument surface
   private def li(v: Int): Ex    = Ex.Lit(LitValue.I32(v))
   private def ls(v: String): Ex = Ex.Lit(LitValue.Str(v))
   private def lng(v: Long): Ex  = Ex.Lit(LitValue.I64(v))

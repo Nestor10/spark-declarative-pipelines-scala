@@ -1,15 +1,15 @@
 package dev.sdp.core
 
-/** The contribution of a single compilation unit (one macro expansion, one
-  * source file) to the overall pipeline graph.
+/** The contribution of a single declaration site (one `table`/`streamingTable`/
+  * `view` value) to the overall pipeline graph.
   *
   * Fragments form a commutative monoid under [[GraphFragment.merge]]:
   * `merge` is associative and commutative, with [[GraphFragment.empty]] as
-  * identity. That algebra is why assembly order can never matter — N modules
-  * compiled in any order contribute the same merged graph. Duplicate ids are
-  * deliberately *representable* here (two modules can both declare "orders");
-  * they're caught by validation after the merge, where the conflict is
-  * actually observable.
+  * identity. That algebra is why assembly order can never matter — the
+  * fragments listed in a `Pipeline(...)`, in any order, merge to the same
+  * graph. Duplicate ids are deliberately *representable* here (two modules can
+  * both declare "orders"); they're caught by validation after the merge, where
+  * the conflict is actually observable.
   */
 final case class GraphFragment(
     nodes: List[PipelineNode],
@@ -27,8 +27,8 @@ object GraphFragment:
 
   /** Canonical rendering in the shared line dialect (same as the manifest
     * body): nodes sorted by id, edges sorted by (from, to), flows sorted by
-    * (target, name). This is the form the DSL macros embed as a string
-    * constant at each call site.
+    * (target, name). This is the form a fragment takes when it crosses the
+    * plugin's classloader boundary (see [[PipelineExport]]).
     */
   def render(fragment: GraphFragment): String =
     val nodeLines = fragment.nodes.sortBy(_.id).map(LineCodec.renderNode)
@@ -55,16 +55,3 @@ object GraphFragment:
             fragment.copy(flows = fragment.flows :+ flow)
         }
     }
-
-  /** Trusted parse for macro-generated constants only. A malformed constant
-    * is a bug in the DSL macros, not author error — so it dies as a defect
-    * rather than occupying an error channel every caller would have to
-    * thread (Zionomicon ch. 3: defects are for the impossible).
-    */
-  def parseTrusted(text: String): GraphFragment =
-    parse(text).fold(
-      bad => throw new IllegalStateException(
-        s"Malformed macro-embedded fragment line: '$bad'. This is a bug in sdp-runtime-dsl."
-      ),
-      identity,
-    )

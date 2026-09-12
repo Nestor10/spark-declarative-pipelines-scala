@@ -1,7 +1,8 @@
 # The sbt plugin (`sbt-spark-pipelines`)
 
-> **Status: pre-release.** Manifest generation and Spark Connect push are both
-> functional and tested end-to-end against Spark 4.1.2.
+> **Status:** manifest generation, dry-run and real runs are all functional and
+> tested end-to-end against a Spark **4.1.1** Connect server (the conformance
+> oracle pins 4.1.2 for *analysis* only — see "Two version facts" below).
 
 Generates a validated pipeline manifest from your pipeline object. Invalid
 graphs **fail the build** — cycles, duplicates, and dangling references never
@@ -18,17 +19,17 @@ addSbtPlugin("io.github.nestor10" % "sbt-spark-pipelines" % <version>)
 lazy val myPipelines = (project in file("."))
   .enablePlugins(dev.sdp.plugin.SparkPipelinesPlugin)
   .settings(
-    scalaVersion     := "3.8.4",
+    scalaVersion     := "3.9.0",
     // The object that exposes `def pipeline: List[GraphFragment]`
     // (typically `object X extends SdpApp`). The plugin loads it and calls it.
     sdpPipelineClass := "com.example.Warehouse",
   )
 ```
 
-You write **one** version (the `addSbtPlugin` line). The matching
-the `sdp` library (authoring surface + `SdpApp` + the
-Connect client) are injected automatically, in lockstep with the plugin —
-override with `sdpRuntimeVersion` only for local testing. The plugin does not
+You write **one** version (the `addSbtPlugin` line): the matching `sdp` library
+(authoring surface + `SdpApp` + the Connect client) is added to
+`libraryDependencies` automatically, in lockstep with the plugin — override with
+`sdpRuntimeVersion` only for local testing. The plugin does not
 auto-activate (`noTrigger`); enable it per project.
 
 See [the DSL doc](dsl.md#assembling-a-pipeline--pipeline-and-sdpapp) for how to
@@ -137,8 +138,10 @@ natively — declare `.schema("id BIGINT, v STRING")` and it's emitted to the
 server (the raw DDL, verbatim, so `DECIMAL`/`ARRAY`/`STRUCT` survive intact);
 Delta and `rate` self-describe and need no schema.
 
-A [Spark Connect + Delta server](../sdp-example/docker-compose.yml) is enough to
-materialize real Delta tables locally.
+Any Spark Connect server with the SDP surface (Spark 4.1+) is enough to
+materialize real tables locally — e.g. an `apache/spark:4.1.1` container started
+with `org.apache.spark.sql.connect.service.SparkConnectServer` and your table
+format's jars on the classpath.
 
 **Re-runs and `sdpWatch` are safe.** Running the same pipeline again (or each
 `sdpWatch` cycle) re-materializes existing tables — materialized views
@@ -167,13 +170,14 @@ container*, not the plugin):
 ## What `sdpManifest` does
 
 1. Compiles the project (it depends on `Runtime / fullClasspath`).
-2. **Classload-eval** (D10): builds an isolated, child-first `URLClassLoader`
-   over the project's runtime classpath, loads `sdpPipelineClass`, calls
-   `pipeline`, and renders each fragment to a STRING via
+2. **Classload-eval** (D10): builds an isolated `URLClassLoader` over the
+   project's runtime classpath — its parent is the JDK *platform* loader, so
+   user and sdp classes resolve from your classpath and never delegate back to
+   the plugin's own loader — then loads `sdpPipelineClass`, calls `pipeline`,
+   and renders each fragment to a STRING via
    `dev.sdp.core.PipelineExport.encodeAll`. The fragment string is the *only*
-   thing that crosses the classloader boundary — the same contract the earlier
-   TASTy embedding used — so the loader is fully isolated and `close()`d in a
-   `finally`. (No macro, no TASTy scan, no `inline`.)
+   thing that crosses the classloader boundary, and the loader is `close()`d in
+   a `finally`. (Nothing is expanded at compile time: evaluation happens here.)
 3. Decodes the strings, merges all fragments, validates the full graph on an
    isolated ZIO runtime.
 4. Writes the canonical manifest, or fails the build listing **every** problem:

@@ -8,8 +8,8 @@ import dev.sdp.dsl.functions.*
   * SUBSTITUTION (noted in SPIKE_NOTES.md): `orders_enriched`'s reference body
   * uses `cols[(order_id: Long, amount: Long, state: String)]` typed columns
   * (`c.amount`). The runtime builder can't synthesize `selectDynamic` fields
-  * without a macro, so we use plain `col("amount")` etc. Because `c.amount`
-  * lowers to `Ex.Col("amount")` in the macro too, the rendered Rel is
+  * in a fixture, so we use plain `col("amount")` etc. Because `c.amount`
+  * lowers to `Ex.Col("amount")` as well, the rendered Rel is
   * identical — the substitution is render-invisible.
   */
 object RuntimeFixtures:

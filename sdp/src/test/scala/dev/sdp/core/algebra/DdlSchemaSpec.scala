@@ -3,7 +3,7 @@ package dev.sdp.core.algebra
 import zio.test.*
 
 /** Spark-fidelity surface: the DDL schema-string parser. Pure function — the
-  * macro positions its `Left`s; everything interesting is testable here.
+  * DSL surfaces its `Left`s; everything interesting is testable here.
   */
 object DdlSchemaSpec extends ZIOSpecDefault:
 

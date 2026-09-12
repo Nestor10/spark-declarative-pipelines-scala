@@ -24,11 +24,11 @@ import dev.sdp.core.algebra.RelCodec
   *
   * Originally the golden file was frozen from the (now-deleted) macro frontend
   * during the D10 cutover; the runtime builder was proven render-identical to
-  * it. Renders are stable by construction (D6: render → parseTrusted is the
-  * canonical round-trip the manifest itself uses), so the same fixtures emit
+  * it. Renders are stable by construction (render → parse is the canonical
+  * round-trip the manifest itself uses), so the same fixtures emit
   * byte-identical blocks on every run.
   *
-  * {{{ sbt 'sdpRuntimeDsl/Test/runMain dev.sdp.dsl.GoldenGen' }}}
+  * {{{ sbt 'sdp/Test/runMain dev.sdp.dsl.GoldenGen' }}}
   *
   * Format: one block per construct — `>>> <name>/<flowName>` line, the render
   * on the following line(s), blank line between blocks.

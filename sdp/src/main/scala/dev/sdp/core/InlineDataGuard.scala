@@ -5,7 +5,7 @@ import dev.sdp.core.algebra.{LitValue, Rel}
 /** Build-time guard on inline literal tables (`Rel.LocalData`, the
   * `spark.createDataFrame(...)` surface).
   *
-  * Inline data rides the manifest + TASTy as literal rows, and lowers to SQL
+  * Inline data rides the fragment string + manifest as literal rows, and lowers to SQL
   * `VALUES` (D7). That is the right transport for small lookup/seed/enum
   * tables, but genuinely large data inlined this way is an *authoring* smell
   * regardless of transport — it bloats the manifest and the compiled artifact.

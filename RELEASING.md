@@ -23,13 +23,13 @@ produced by default.
 
 1. **Pre-release checklist**
    - [ ] `ROADMAP.md` reflects reality; completed items moved out.
-   - [ ] **CoreEpoch (D6, softened by D11):** if this release changes the
+   - [ ] **Codec changes travel in lockstep:** if this release changes the
          fragment/manifest codec (`RelCodec`, `LineCodec`, `PipelineManifest`,
-         `PipelineExport`), bump `dev.sdp.core.CoreEpoch.value`. Since the
-         D11 collapse the old cross-artifact inlining hazard is mostly gone
-         (core/dsl/connect are one jar); the epoch now guards the remaining
-         sdp <-> plugin boundary and consumer action caches. Cheap insurance —
-         when in doubt, bump.
+         `PipelineExport`), remember that the ENCODER (the sdp library on the
+         user's classpath) and the PARSER (the sdp library inside the plugin's
+         metabuild) must be the same version — the plugin injects its own
+         version by default, so publish both artifacts from the same tag and
+         never mix versions by hand.
    - [ ] Green locally: `sbt Test/compile`, `sbt sdp/testFull`,
          `sbt sbtSparkPipelines/scripted`.
    - [ ] Smoke the consumer: `scripts/republish-and-reset-example.sh`, then

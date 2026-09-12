@@ -10,8 +10,8 @@ import PlanAnalysis.SchemaField
 /** The pass-through bet, tested: `fn(name, args*)` claims the *entire* Spark
   * SQL function library by sending unresolved functions for the server's
   * analyzer to bind. This battery covers string, math, conditional and
-  * temporal functions — authored in the **fluent flow language**, extracted
-  * by the macro, and schema-checked by live Catalyst. If the analyzer binds
+  * temporal functions — authored in the **fluent flow language**, built by the
+  * plan-builder, and schema-checked by live Catalyst. If the analyzer binds
   * the name and agrees on the type, the function works; there is no
   * client-side registry to fall out of date.
   */
@@ -21,7 +21,7 @@ object FunctionLibrarySpec extends ZIOSpecDefault:
     sys.env.contains("SDP_INTEGRATION") || java.lang.Boolean.getBoolean("sdp.integration")
 
   /** The probe pipeline is authored exactly as an end user would write it;
-    * we then lift the macro-extracted relation straight into AnalyzePlan.
+    * we then lift the built relation straight into AnalyzePlan.
     */
   private val probe: Rel =
     materializedViewFrom("fn_probe") {

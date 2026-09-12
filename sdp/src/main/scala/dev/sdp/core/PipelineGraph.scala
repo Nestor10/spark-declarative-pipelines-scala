@@ -4,12 +4,12 @@ package dev.sdp.core
   *
   * This is the innermost ring of the Onion: zero dependencies, total functions,
   * deterministic. All structural validation lives here so the same logic runs
-  * both inside the macro (compile time) and inside the ZIO runtime (sbt task time).
+  * in the sbt plugin's task and in the `SdpApp` runner's own validation pass.
   *
   * Design notes:
   *   - `nodes` is keyed by id, so a constructed graph *cannot* contain duplicate
   *     ids — duplicates are caught earlier, in [[PipelineGraph.fromFragments]],
-  *     which receives the raw declaration list the macro emits.
+  *     which receives the raw declaration list the fragments carry.
   *   - Validation accumulates: every check contributes zero or more errors and
   *     the results concatenate. Authors see all structural problems in one
   *     compile, not one per compile.
@@ -93,7 +93,7 @@ final case class PipelineGraph(
 
 object PipelineGraph:
 
-  /** Assemble a graph from raw declaration fragments — the shape the macro
+  /** Assemble a graph from raw declaration fragments — the shape the DSL
     * layer emits. This is the smart constructor: duplicate ids are only
     * representable *here*, before the fragments collapse into the keyed map,
     * so this is where they're caught.

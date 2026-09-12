@@ -9,7 +9,7 @@ them. (For the plugin's *user-facing* tasks — `sdpManifest`, `sdpPush`,
 | sbt project | Path | Contents |
 |---|---|---|
 | `sdp` | `sdp/` | THE library: pure domain (`dev.sdp.core`), ZIO services (`dev.sdp.app`), runtime plan-builder DSL (`dev.sdp.dsl`), Spark Connect client + `SdpApp` (`dev.sdp.connect`) |
-| `sbtSparkPipelines` | `sbt-spark-pipelines/` | The sbt plugin: TASTy scanner, proto encoders, gRPC client, conformance harness |
+| `sbtSparkPipelines` | `sbt-spark-pipelines/` | The sbt plugin: classload-eval discovery, cached manifest task, run/watch/seed tasks over the library's Connect client |
 | `root` | `.` | Aggregate only; never published |
 
 ## Everyday commands
@@ -48,13 +48,13 @@ ivy repo first, so scripted always tests the *current* code.
 Gated — they skip unless enabled:
 
 ```
-SDP_INTEGRATION=1 sbt 'sbtSparkPipelines/Test/runMain dev.sdp.plugin.connect.AlgebraOracleSpec'
-SDP_INTEGRATION=1 sbt 'sbtSparkPipelines/Test/runMain dev.sdp.plugin.connect.PipelinesRegistrationIntegrationSpec'
-SDP_INTEGRATION=1 sbt 'sbtSparkPipelines/Test/runMain dev.sdp.plugin.connect.FunctionLibrarySpec'
+SDP_INTEGRATION=1 sbt 'sdp/Test/runMain dev.sdp.connect.AlgebraOracleSpec'
+SDP_INTEGRATION=1 sbt 'sdp/Test/runMain dev.sdp.connect.PipelinesRegistrationIntegrationSpec'
+SDP_INTEGRATION=1 sbt 'sdp/Test/runMain dev.sdp.connect.FunctionLibrarySpec'
 ```
 
 Each suite starts (and always tears down) an `apache/spark:4.1.2` container via the
-`podman`/`docker` CLI — no Testcontainers, engine-neutral (see `DECISIONS.md` D3). First run
+`podman`/`docker` CLI — no Testcontainers, engine-neutral. First run
 pulls the image (multi-GB). The env var must reach the *forked test JVM*: if you started the
 sbt server without it, `sbt shutdown` first, then run with the var set.
 
@@ -115,15 +115,17 @@ sbt 'sdp/publishLocal' && sbt 'sbtSparkPipelines/publishLocal'
 
 Then a scratch project (`project/plugins.sbt` → `addSbtPlugin("io.github.nestor10" % "sbt-spark-pipelines"
 % "0.1.0-SNAPSHOT")`) can exercise the real task flow. **SNAPSHOT + warm caches caveat:** after
-republishing changed macro/helper code, restart the scratch project's sbt server — and read
-`DECISIONS.md` D6 (CoreEpoch) before assuming staleness is your bug.
+republishing the library or plugin, restart the scratch project's sbt server — a warm action
+cache (and the metabuild's cached plugin closure) can otherwise serve stale results.
 
 ## Release discipline
 
-- **Bump `dev.sdp.core.CoreEpoch.value` on every sdp-core release** (D6 — cache correctness
-  for downstream macro re-expansion).
-- The manifest format (`sdp-manifest/2`) is a frozen contract: breaking changes bump the
-  version and keep the parser bilingual.
+- **Publish both artifacts from the same tag.** The fragment string is the contract between
+  the library (encoder, on the user's classpath) and the plugin (parser, in the metabuild);
+  the plugin injects its own version of `sdp` by default, so a mixed pair is a config mistake,
+  not a supported combination.
+- The manifest format (`sdp-manifest/2`, `/3` for AUTO CDC + `once`) is a frozen contract:
+  breaking changes bump the version and keep the parser multilingual.
 
 ## Iterating against a separate consumer (e.g. `../sdp-example`)
 
@@ -131,8 +133,8 @@ A consumer that resolves the plugin from `publishLocal`/`publishM2` can pick up 
 plugin after you republish a `-SNAPSHOT` — the consumer's metabuild caches the old plugin
 closure (coursier + its `project/target`). It bites specifically on **codec/format changes**
 (the manifest, `RelCodec`): the fragment *encoder* (the sdp library on the user classpath) and
-the *parser* (the sdp library inside the plugin metabuild) must move in lockstep, and `CoreEpoch`
-only busts one side. Symptom: `Malformed … fragment line`,
+the *parser* (the sdp library inside the plugin metabuild) must move in lockstep, and a warm
+cache can bust only one side. Symptom: an undecodable fragment line,
 or `NoClassDefFoundError`/`ZipException` at plugin load.
 
 Fix (one command, from the main repo root), then restart the consumer's sbt session:
@@ -147,6 +149,7 @@ versions — `-SNAPSHOT` mutability is the root cause.)
 
 ## Where things are decided
 
-Before changing fragment discovery, the proto toolchain, the container oracle, the algebra,
-typed columns, or caching discipline: read [`DECISIONS.md`](../DECISIONS.md) — each has
-evidence behind it (research cycles under `context/research/`, spikes, live-server receipts).
+Fragment discovery, the proto toolchain, the container oracle, the algebra, typed columns and
+caching discipline are all settled by evidence (spikes, live-server receipts, minimal repros)
+recorded in the maintainers' decision log and in the commit history. Re-open one of them with
+evidence of the same grade, not a preference.

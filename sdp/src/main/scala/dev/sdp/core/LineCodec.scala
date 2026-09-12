@@ -4,11 +4,11 @@ import java.net.{URLDecoder, URLEncoder}
 import java.nio.charset.StandardCharsets.UTF_8
 
 /** Line-level canonical codec shared by [[PipelineManifest]] (whole-graph
-  * artifact) and [[GraphFragment]] (per-call-site embedded constant).
+  * artifact) and [[GraphFragment]] (the per-declaration contribution).
   *
-  * One serialization for both keeps the TASTy-embedded fragments and the
-  * final manifest in the same dialect: fields percent-encoded, `|`-separated,
-  * one node or edge per line.
+  * One serialization for both keeps the fragment strings that cross the
+  * plugin's classloader boundary and the final manifest in the same dialect:
+  * fields percent-encoded, `|`-separated, one node or edge per line.
   */
 private[core] object LineCodec:
 

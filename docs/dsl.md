@@ -344,8 +344,9 @@ final authority. Qualified references (`a.b`) are left to the server.
 
 Describe a schema as a Scala 3 named tuple and get *type-checked,
 IDE-autocompleted* column references — wrong names are a **type error** at
-`compile`, before assembly even runs (this is the one small `inline` kept in
-the runtime DSL):
+`compile`, before assembly even runs. No macro is involved: `cols[S]` is a
+`Selectable` whose field set is computed from the named tuple by
+`NamedTuple.Map`.
 
 ```scala
 type Orders = (order_id: Long, amount: Long, customer_name: String)
@@ -497,5 +498,5 @@ oracle guards that), but bodies are now plain `def`s and values — so loops,
 helpers, and conditionals all work. The plugin discovers fragments by
 *evaluating* your pipeline object in an isolated classloader and reading the
 fragment strings back across the boundary (the same string contract TASTy used);
-there is no macro, no TASTy scan, and no `inline` except the small `cols[S]`
-type-level field check.
+there is no macro, no TASTy scan, and no `inline` at all — `cols[S]`'s
+compile-time field checking is plain `Selectable` + named tuples.

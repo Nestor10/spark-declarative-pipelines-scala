@@ -9,7 +9,7 @@ import java.nio.file.{Files, Paths}
   *
   * {{{
   * sbt 'sdpConnect/Test/runMain dev.sdp.connect.conformance.RenderInventory \
-  *   sdp-connect/src/test/resources/spark-connect-inventory.txt'
+  *   sdp/src/test/resources/spark-connect-inventory.txt'
   * }}}
   */
 object RenderInventory:
