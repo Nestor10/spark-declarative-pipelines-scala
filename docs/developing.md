@@ -107,6 +107,42 @@ every capability claim names a real wire field. It also prints the coverage repo
 3. **The git diff of the snapshot is the upstream change report.** Triage any new relation
    entries in `ConnectTiers` (the build fails until every one is classified).
 
+## The behavioral matrix — the other half of conformance
+
+```
+sbt 'sdp/Test/runMain dev.sdp.connect.conformance.PrintBehaviorCoverage'
+```
+
+The wire matrix above proves *message-shape* coverage. It was at 100% on T0 when the
+external-table gap shipped (D9), because reading a table you do not own is not a message —
+it is a usage distinction in an existing one. Every expensive bug in this project's history
+has lived in that blind spot: the graph-defaults edge drop, TRUNCATE-on-Delta, provider
+re-assert on re-run, re-run NULL semantics.
+
+So `BehaviorInventory` (test sources) enumerates the *server behaviors* an SDP client depends
+on — registration sequence and error surfaces, graph defaults and name resolution, fresh run
+vs re-run materialization, full refresh, `once` flows, external-input resolution, streaming
+triggers and run termination, event/progress wording, dry-run semantics — one row each, with
+a **Spark source anchor** (path → class.method in `../spark`) and an honest status:
+`Covered(spec)` / `Uncovered` / `NotApplicable(reason)`.
+
+Rules that keep it a measurement rather than a brochure, enforced by `BehaviorCoverageSpec`
+in normal `testFull`:
+
+- every row cites an anchor (the authority is the Spark source, not our memory);
+- a `Covered` row must name a spec class that **resolves on the test classpath** — a renamed
+  or deleted spec breaks the claim loudly;
+- the whole `id → status` mapping is asserted against a literal snapshot, so coverage cannot
+  drift in either direction without a deliberate edit;
+- behavior verified **by hand** (a live session, a measured experiment) is still `Uncovered`,
+  with the receipt in the row's note. Only an automated spec counts.
+
+Most rows are Uncovered today, and that is the honest headline: the container-gated
+`PipelinesRegistrationIntegrationSpec` covers the registration handshake, dry-run validation,
+the dangling-upstream rejection and external-input resolution failure; re-run, full-refresh
+and graph-defaults behavior is known only from hand-run sessions. The report is generated, not
+committed — regenerate it whenever you want the current accounting.
+
 ## Upstream watch — is the pin still current?
 
 ```

@@ -21,8 +21,10 @@ object PipelinesRegistrationIntegrationSpec extends ZIOSpecDefault:
     * a temporary view defined by real SQL, and a materialized view computed
     * from it. (Iterating against the live server taught us the SDP rules:
     * outputs of type TABLE are streaming tables — they cannot be fed by
-    * batch relations, and `DefineFlow.once` is rejected by this server
-    * version. Batch-derived datasets are materialized views.)
+    * batch relations, and `DefineFlow.once` is rejected — not just by this
+    * server version: `PipelinesHandler.defineFlow` still refuses it at master
+    * HEAD, and on *presence* rather than value. See the behavioral matrix rows
+    * ONCE-1/ONCE-2. Batch-derived datasets are materialized views.)
     */
   private val manifest = PipelineManifest.fromGraph(
     PipelineGraph(
