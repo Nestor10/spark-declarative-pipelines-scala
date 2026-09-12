@@ -132,3 +132,6 @@
 
 >>> typedCols/typed
 (project (filter (read bronze.orders batch) (fn %3E false (col amount) (lit i64 0))) (col order_id) (col state))
+
+>>> hofsNested/hof_nested
+(project (read t batch) (alias (fn transform false (col xs) (lam (vars x) (fn transform false (lamvar x) (lam (vars x_1) (fn %2B false (lamvar x_1) (lamvar x)))))) nested) (alias (fn aggregate false (col xs) (lit i64 0) (lam (vars acc x) (fn %2B false (lamvar acc) (fn size false (fn filter false (lamvar x) (lam (vars x_1) (fn %3E false (lamvar x_1) (lit i32 0)))))))) folded))

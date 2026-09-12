@@ -38,21 +38,21 @@ def fn(name: String, args: Column*): Column = Column(Ex.Fn(name, args.map(_.ex).
   * macro uses the real source name, so HOF lambdas in fixtures must use this
   * same name to stay render-identical (see report). */
 def lam(f: Column => Column): Column =
-  Column(Ex.Lam(List("x"), f(Column(Ex.LamVar("x"))).ex))
+  Column(LambdaScope.lam(List("x"))(ps => f(ps.head)))
 
 /** A named single-parameter lambda — runtime escape so the wire `LamVar` can
   * match the macro's source-derived parameter name exactly. Not on the macro
   * surface; runtime-only convenience for render-faithful HOF fixtures. */
 def lam(param: String)(f: Column => Column): Column =
-  Column(Ex.Lam(List(param), f(Column(Ex.LamVar(param))).ex))
+  Column(LambdaScope.lam(List(param))(ps => f(ps.head)))
 
 /** A two-parameter lambda — `lam2` (FlowExtractor lines 175–187). */
 def lam2(f: (Column, Column) => Column): Column =
-  Column(Ex.Lam(List("l", "r"), f(Column(Ex.LamVar("l")), Column(Ex.LamVar("r"))).ex))
+  Column(LambdaScope.lam(List("l", "r"))(ps => f(ps.head, ps(1))))
 
 /** Named two-parameter lambda — runtime escape for matching source names. */
 def lam2(p1: String, p2: String)(f: (Column, Column) => Column): Column =
-  Column(Ex.Lam(List(p1, p2), f(Column(Ex.LamVar(p1)), Column(Ex.LamVar(p2))).ex))
+  Column(LambdaScope.lam(List(p1, p2))(ps => f(ps.head, ps(1))))
 
 /** EXISTS subquery — `Apply(Ident("exists"), List(rel))` (FlowExtractor lines
   * 192–195): `Subquery(rel, Exists)`. */

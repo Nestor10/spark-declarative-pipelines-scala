@@ -180,6 +180,18 @@ object CorpusRuntimeFixtures:
     )
   }
 
+  // NESTED higher-order functions: the inner lambda must not reuse the outer
+  // variable's synthesized name, or the inner binding captures the outer
+  // reference (a clean compile, a wrong plan server-side). LambdaScope freshens
+  // only the nested names — `hofsNoWrapper` above pins the unnested spelling.
+  val hofsNested: GraphFragment = materializedView("hof_nested") {
+    spark.table("t").select(
+      transform(col("xs"), x => transform(x, y => y + x)).as("nested"),
+      aggregate(col("xs"), lit(0L), (acc, x) => acc + size(filter(x, e => e > lit(0))))
+        .as("folded"),
+    )
+  }
+
   val ddlSchema: GraphFragment = streamingTable("rates") {
     spark.readStream
       .format("rate")

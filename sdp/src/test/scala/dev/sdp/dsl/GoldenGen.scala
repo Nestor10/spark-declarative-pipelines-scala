@@ -39,9 +39,15 @@ object GoldenGen:
     frag.flows.map(f => s">>> $name/${f.name}\n${RelCodec.render(f.relation)}")
 
   def main(args: Array[String]): Unit =
-    val out  = GoldenCorpus.all.flatMap((name, frag) => blocks(name, frag)).mkString("", "\n\n", "\n")
-    // sbt 2 runs Test/runMain with the MODULE directory as CWD.
-    val path = Paths.get("src/test/resources/golden-renders.txt")
+    val out = GoldenCorpus.all.flatMap((name, frag) => blocks(name, frag)).mkString("", "\n\n", "\n")
+    // CWD depends on how sbt was invoked (module dir under some invocations,
+    // the BUILD ROOT under the thin client) — resolve the module explicitly so
+    // a regeneration can never leave a stray `src/` at the repo root.
+    val relative = Paths.get("src/test/resources/golden-renders.txt")
+    val path =
+      if Files.isDirectory(Paths.get("sdp").resolve(relative.getParent)) then
+        Paths.get("sdp").resolve(relative)
+      else relative
     Files.createDirectories(path.getParent)
     val _ = Files.write(path, out.getBytes(UTF_8))
     println(s"wrote ${path.toAbsolutePath} (${out.linesIterator.count(_.startsWith(">>>"))} flows)")

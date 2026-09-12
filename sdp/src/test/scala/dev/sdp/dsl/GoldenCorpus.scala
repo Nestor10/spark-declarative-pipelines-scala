@@ -63,6 +63,9 @@ object GoldenCorpus:
     "offsetTail"              -> CorpusRuntimeFixtures.offsetTail,
     "orderByAsc"              -> CorpusRuntimeFixtures.orderByAsc,
     "typedCols"               -> CorpusRuntimeFixtures.typedCols,
+    // appended 2026-09-11 with the nested-lambda fix (review item 3): a NEW
+    // fixture, so its golden block is new too — no existing block changed.
+    "hofsNested"              -> CorpusRuntimeFixtures.hofsNested,
   )
 
   /** Warehouse then corpus, in golden-file block order. */

@@ -124,9 +124,11 @@ object functions:
   def map_values(e: Column): Column = Column(Ex.Fn("map_values", List(e.ex)))
 
   // ---- higher-order functions (real Scala lambdas) --------------------
-  // The macro extracts the author's source param name into LamVar; at runtime
-  // we synthesize the conventional name. Fixtures use the same names to stay
-  // render-identical. See FlowExtractor.fnArg lambda branch (lines 436–439).
+  // The Scala parameter name is erased at runtime, so the builder synthesizes
+  // the conventional wire name ("x", "acc"/"x", "l"/"r"). NESTED HOFs would
+  // otherwise synthesize the same name twice and the inner binding would
+  // capture outer references — see [[LambdaScope]], which freshens names only
+  // when a lambda is actually nested (non-nested renders stay identical).
   def transform(column: Column, f: Column => Column): Column =
     Column(Ex.Fn("transform", List(column.ex, lamEx("x", f))))
   def filter(column: Column, f: Column => Column): Column =
@@ -146,7 +148,10 @@ object functions:
   def rand(): Column           = Column(Ex.Fn("rand", Nil))
   def rand(seed: Long): Column = Column(Ex.Fn("rand", List(lng(seed))))
 
+  // Lambda variable names go through LambdaScope: the conventional name when
+  // the lambda is not nested (renders unchanged), a freshened one inside
+  // another lambda so an inner binding can never capture an outer reference.
   private def lamEx(name: String, f: Column => Column): Ex =
-    Ex.Lam(List(name), f(Column(Ex.LamVar(name))).ex)
+    LambdaScope.lam(List(name))(ps => f(ps.head))
   private def lam2Ex(p1: String, p2: String, f: (Column, Column) => Column): Ex =
-    Ex.Lam(List(p1, p2), f(Column(Ex.LamVar(p1)), Column(Ex.LamVar(p2))).ex)
+    LambdaScope.lam(List(p1, p2))(ps => f(ps.head, ps(1)))
