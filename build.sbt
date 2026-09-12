@@ -31,7 +31,14 @@ ThisBuild / organization := "io.github.nestor10"
 // Version is OWNED BY sbt-dynver (via sbt-ci-release): a `vX.Y.Z` git tag
 // publishes X.Y.Z; between tags you get X.Y.Z+N-<hash>-SNAPSHOT. Do not set
 // `ThisBuild / version` — see RELEASING.md.
-ThisBuild / scalaVersion := "3.9.0"
+// CEILING: sbt 2.0.8 loads plugins (and their deps) with its own Scala 3.8.x —
+// 3.9.0-compiled TASTy (28.9) is unreadable in every consumer metabuild, so the
+// plugin AND sdp must stay on the newest Scala whose TASTy sbt can read. Bump
+// only when sbt's shipped Scala bumps. (Proven 2026-09-12: 3.9.0 → scripted
+// fails with "Forward incompatible TASTy 28.9"; 3.8.4 → green. User projects
+// on 3.9+ still consume the 3.8.4-built sdp fine — forward-compatible TASTy;
+// the scripted sandboxes pin 3.9.0 to keep proving exactly that.)
+ThisBuild / scalaVersion := "3.8.4"
 
 // ---------------------------------------------------------------------
 // Publishing / POM metadata — required for Maven Central (Sonatype
