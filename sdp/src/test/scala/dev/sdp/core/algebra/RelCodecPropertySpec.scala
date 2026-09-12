@@ -348,6 +348,16 @@ object RelCodecPropertySpec extends ZIOSpecDefault:
 
   private val trees: Gen[Any, Rel] = relGen(3)
 
+  /** The ONLY form `RelCodec.render` emits for a `Rel.NamedTable`. Every atom
+    * in the dialect is percent-encoded (spaces become `+`, parens `%28`/`%29`),
+    * so a hostile string like `"(read t batch)"` can never forge one — which is
+    * what makes the render an INDEPENDENT oracle for the traversal below. */
+  private val ReadForm = """\(read (\S+) (?:stream|batch)\)""".r
+
+  private def decodeAtom(atom: String): String =
+    if atom == "~" then "" // LineCodec's reserved empty-atom sentinel
+    else java.net.URLDecoder.decode(atom, java.nio.charset.StandardCharsets.UTF_8)
+
   private val nodeGen: Gen[Any, PipelineNode] = Gen.oneOf(
     for i <- hostileName; f <- hostile yield PipelineNode.Table(i, f),
     for i <- hostileName; f <- hostile yield PipelineNode.StreamingTable(i, f),
@@ -466,6 +476,29 @@ object RelCodecPropertySpec extends ZIOSpecDefault:
           RelCodec.finiteOrError("x", Double.NaN).isLeft,
           RelCodec.finiteOrError("x", Double.PositiveInfinity).isLeft,
         )
+      },
+    ),
+    suite("traversal totality (P3.1)")(
+      test("law: Flow.reads sees exactly the (read …) forms the codec renders") {
+        // The traversal (AlgebraShape) and the renderer are two independent
+        // exhaustive matches over Rel. If either silently drops a subtree —
+        // which is precisely what the old `case _ => Nil` catch-alls allowed —
+        // they disagree here. Subquery-embedded reads are included on both
+        // sides: `render` descends into `(subq …)`, and so must lineage.
+        check(trees) { rel =>
+          val rendered   = RelCodec.render(rel)
+          val fromRender = ReadForm.findAllMatchIn(rendered).map(m => decodeAtom(m.group(1))).toSet
+          assertTrue(Flow.reads(rel) == fromRender)
+        }
+      },
+      test("allRels is the structural pre-order and is closed under children") {
+        check(trees) { rel =>
+          val all = Flow.allRels(rel)
+          assertTrue(
+            all.headOption.contains(rel),
+            all.forall(node => AlgebraShape.of(node).children.forall(all.contains)),
+          )
+        }
       },
     ),
     suite("totality under mutation (item 4 regression net)")(

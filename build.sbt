@@ -97,6 +97,16 @@ ThisBuild / scalacOptions ++= Seq(
   "-Wunused:all",
   "-Wvalue-discard",
   "-Wnonunit-statement",
+  // P3.1: a non-exhaustive match on a sealed hierarchy is an ERROR, not a
+  // warning. The algebra (`Rel`/`Ex`) is matched in four places that must each
+  // have an opinion about every case — AlgebraShape (all structural
+  // traversal), RelCodec.render, SchemaCheck.infer, AlgebraProtoEncoder — and a
+  // forgotten case there is SILENT: dropped lineage edges, false-negative
+  // validation, an unencodable node. Scala 3 only warns (E029), and warnings
+  // scroll past. This one flag is the whole guard: adding a `Rel` case fails
+  // compilation in all four (measured). Scoped by message rather than `-Werror`
+  // so the rest of the warning surface stays advisory.
+  "-Wconf:msg=match may not be exhaustive:e",
 )
 
 // Pin ZIO once for every module that needs it.
