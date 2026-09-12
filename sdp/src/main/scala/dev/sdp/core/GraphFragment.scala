@@ -36,23 +36,24 @@ object GraphFragment:
     val flowLines = fragment.flows.sortBy(f => (f.target, f.name)).map(LineCodec.renderFlow)
     (nodeLines ::: edgeLines ::: flowLines).mkString("\n")
 
-  /** Inverse of [[render]]. Malformed lines surface as `Left` with the
-    * offending content — callers decide whether that's an error (hand-written
-    * input) or a defect (macro-generated constant).
+  /** Inverse of [[render]]. Malformed lines surface as `Left` carrying the
+    * line-level diagnostic (which field, which inner parse failed) — callers
+    * decide whether that's an error (hand-written input) or a defect (a
+    * generated constant). Total: no input throws.
     */
   def parse(text: String): Either[String, GraphFragment] =
     val lines = text.linesIterator.filter(_.nonEmpty).toList
     lines.foldLeft[Either[String, GraphFragment]](Right(empty)) {
       case (acc @ Left(_), _) => acc
       case (Right(fragment), line) =>
-        LineCodec.parseLine(line) match
-          case Some(LineCodec.ParsedLine.NodeLine(node)) =>
-            Right(fragment.copy(nodes = fragment.nodes :+ node))
-          case Some(LineCodec.ParsedLine.EdgeLine(edge)) =>
-            Right(fragment.copy(edges = fragment.edges + edge))
-          case Some(LineCodec.ParsedLine.FlowLine(flow)) =>
-            Right(fragment.copy(flows = fragment.flows :+ flow))
-          case None => Left(line)
+        LineCodec.parseLine(line).map {
+          case LineCodec.ParsedLine.NodeLine(node) =>
+            fragment.copy(nodes = fragment.nodes :+ node)
+          case LineCodec.ParsedLine.EdgeLine(edge) =>
+            fragment.copy(edges = fragment.edges + edge)
+          case LineCodec.ParsedLine.FlowLine(flow) =>
+            fragment.copy(flows = fragment.flows :+ flow)
+        }
     }
 
   /** Trusted parse for macro-generated constants only. A malformed constant

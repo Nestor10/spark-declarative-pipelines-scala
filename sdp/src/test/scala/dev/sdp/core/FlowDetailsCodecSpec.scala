@@ -98,7 +98,7 @@ object FlowDetailsCodecSpec extends ZIOSpecDefault:
       val line    = LineCodec.renderFlow(onceCdc)
       assertTrue(
         line.split("\\|", -1).length == 5, // five-field v3 line
-        LineCodec.parseLine(line) == Some(LineCodec.ParsedLine.FlowLine(onceCdc)),
+        LineCodec.parseLine(line) == Right(LineCodec.ParsedLine.FlowLine(onceCdc)),
       )
     },
 

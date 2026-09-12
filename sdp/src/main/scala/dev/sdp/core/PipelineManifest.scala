@@ -74,7 +74,10 @@ object PipelineManifest:
   enum ParseError:
     case MissingHeader
     case UnsupportedVersion(found: String)
-    case MalformedLine(lineNumber: Int, line: String)
+    /** @param detail the line codec's diagnostic (which field / inner parse
+      *               failed) — carried so a version-skew corruption names
+      *               itself instead of just "malformed". */
+    case MalformedLine(lineNumber: Int, line: String, detail: String)
 
   /** Parse a rendered manifest. Inverse of [[PipelineManifest.render]]:
     * `parse(m.render) == Right(m)` for any canonically constructed `m`.
@@ -116,9 +119,11 @@ object PipelineManifest:
         case (acc @ Left(_), _) => acc
         case (Right((nodes, edges, flows)), (line, idx)) =>
           LineCodec.parseLine(line) match
-            case Some(LineCodec.ParsedLine.NodeLine(node)) => Right((node :: nodes, edges, flows))
-            case Some(LineCodec.ParsedLine.EdgeLine(edge)) => Right((nodes, edge :: edges, flows))
-            case Some(LineCodec.ParsedLine.FlowLine(flow)) => Right((nodes, edges, flow :: flows))
-            case None => Left(ParseError.MalformedLine(idx + 2, line)) // +2: 1-based, after header
+            case Right(LineCodec.ParsedLine.NodeLine(node)) => Right((node :: nodes, edges, flows))
+            case Right(LineCodec.ParsedLine.EdgeLine(edge)) => Right((nodes, edge :: edges, flows))
+            case Right(LineCodec.ParsedLine.FlowLine(flow)) => Right((nodes, edges, flow :: flows))
+            // +2: 1-based, after the header. The codec's own diagnostic rides
+            // along — "malformed percent-encoding in '%zz'" beats "malformed".
+            case Left(detail) => Left(ParseError.MalformedLine(idx + 2, line, detail))
       }
       .map((ns, es, fs) => (ns.reverse, es.reverse, fs.reverse))

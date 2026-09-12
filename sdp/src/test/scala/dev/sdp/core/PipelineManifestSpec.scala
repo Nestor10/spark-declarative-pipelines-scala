@@ -63,11 +63,30 @@ object PipelineManifestSpec extends ZIOSpecDefault:
           Left(PipelineManifest.ParseError.UnsupportedVersion("99"))
       )
     },
-    test("rejects a malformed line with its 1-based location") {
+    test("rejects a malformed line with its 1-based location and a diagnostic") {
       val text = "sdp-manifest/1\nnode|a|table|delta\ngarbage line\n"
       assertTrue(
         PipelineManifest.parse(text) ==
-          Left(PipelineManifest.ParseError.MalformedLine(3, "garbage line"))
+          Left(
+            PipelineManifest.ParseError.MalformedLine(
+              3,
+              "garbage line",
+              "unrecognized line (1 fields): 'garbage line'",
+            )
+          )
+      )
+    },
+    test("a malformed percent-escape is an error, not a throw, and names the field") {
+      // %zz is not a valid escape: URLDecoder throws, the codec must not.
+      val badNode = "sdp-manifest/2\nnode|bad%zz|table|delta\n"
+      val badFlow = "sdp-manifest/2\nnode|a|table|delta\nflow|f|a|%28read+t+batch%zz\n"
+      val nodeDetail = PipelineManifest.parse(badNode) match
+        case Left(PipelineManifest.ParseError.MalformedLine(2, _, detail)) => detail
+        case other                                                        => s"unexpected: $other"
+      assertTrue(
+        nodeDetail.contains("malformed percent-encoding"),
+        nodeDetail.contains("bad%zz"),
+        PipelineManifest.parse(badFlow).isLeft,
       )
     },
   )

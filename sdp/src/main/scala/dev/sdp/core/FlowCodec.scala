@@ -25,7 +25,7 @@ import dev.sdp.core.algebra.{Ex, RelCodec}
   */
 private[core] object FlowCodec:
 
-  import LineCodec.{enc, dec}
+  import LineCodec.{decode, enc}
 
   // ------------------------------------------------------------------ render
 
@@ -64,9 +64,11 @@ private[core] object FlowCodec:
     val tokens = text.split("\\s+").toList.filter(_.nonEmpty)
     tokens match
       case "wr" :: rel :: Nil =>
-        RelCodec.parse(dec(rel)).map(FlowDetails.WriteRelation(_))
+        // Total: every embedded atom is percent-decoded through
+        // LineCodec.decode, so a malformed escape is a Left, not a throw.
+        decode(rel).flatMap(RelCodec.parse).map(FlowDetails.WriteRelation(_))
       case "autocdc" :: source :: scd :: rest =>
-        parseAutoCdc(dec(source), scd, rest)
+        decode(source).flatMap(parseAutoCdc(_, scd, rest))
       case other =>
         Left(s"unrecognized flow details: ${other.take(3).mkString(" ")}")
 
@@ -133,7 +135,7 @@ private[core] object FlowCodec:
       case `tag` :: rest => Right(rest)
       case other         => Left(s"autocdc: expected '$tag', got: ${other.take(1).mkString}")
 
-  private def decodeEx(atom: String): Either[String, Ex] = RelCodec.parseEx(dec(atom))
+  private def decodeEx(atom: String): Either[String, Ex] = decode(atom).flatMap(RelCodec.parseEx)
 
   private def parseScd(tag: String): Either[String, ScdType] = tag match
     case "scd1" => Right(ScdType.Scd1)

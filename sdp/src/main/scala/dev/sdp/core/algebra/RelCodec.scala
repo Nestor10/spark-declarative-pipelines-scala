@@ -249,9 +249,21 @@ object RelCodec:
   private object Sexp:
     def read(text: String): Either[String, Sexp] =
       val tokens = tokenize(text)
-      readOne(tokens).flatMap {
-        case (sexp, Nil)  => Right(sexp)
-        case (_, leftover) => Left(s"trailing input: ${leftover.take(5).mkString(" ")}")
+      // Totality, once, here. Atoms are percent-encoded and the recursive
+      // descent below decodes them positionally (LineCodec.dec); a malformed
+      // escape would throw mid-parse and break the "total parsing with the
+      // offending input in the error" contract. Rejecting an undecodable atom
+      // up front keeps every `dec` call downstream provably safe — and names
+      // the bad token, which is what a version-skewed boundary needs.
+      val badAtom = tokens.iterator
+        .filter(t => t != "(" && t != ")")
+        .map(LineCodec.decode)
+        .collectFirst { case Left(problem) => problem }
+      badAtom.toLeft(()).flatMap { _ =>
+        readOne(tokens).flatMap {
+          case (sexp, Nil)   => Right(sexp)
+          case (_, leftover) => Left(s"trailing input: ${leftover.take(5).mkString(" ")}")
+        }
       }
 
     private def tokenize(text: String): List[String] =

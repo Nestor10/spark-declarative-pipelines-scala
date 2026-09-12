@@ -47,39 +47,82 @@ private[core] object LineCodec:
     case EdgeLine(edge: DependencyEdge)
     case FlowLine(flow: Flow)
 
-  /** One parsed line — or None for anything malformed.
+  /** One parsed line — or a `Left` naming what went wrong.
+    *
+    * TOTAL: no input throws. Field decoding goes through [[decode]], and the
+    * inner `Rel`/`FlowDetails` diagnostic is PROPAGATED rather than collapsed
+    * to "malformed" — at the classloader/version-skew boundary the inner
+    * message ("unknown rel tag 'pivot'") is the whole story.
     *
     * `split` with limit -1 keeps trailing empty fields: a node whose last
     * field is the empty string (e.g. an MV with an authored flow instead of
     * node-level SQL) must still parse as four fields.
     */
-  def parseLine(line: String): Option[ParsedLine] =
+  def parseLine(line: String): Either[String, ParsedLine] =
     line.split("\\|", -1) match
       case Array("node", id, "table", format) =>
-        Some(ParsedLine.NodeLine(PipelineNode.Table(dec(id), dec(format))))
+        for i <- decode(id); f <- decode(format)
+        yield ParsedLine.NodeLine(PipelineNode.Table(i, f))
       case Array("node", id, "streaming-table", format) =>
-        Some(ParsedLine.NodeLine(PipelineNode.StreamingTable(dec(id), dec(format))))
+        for i <- decode(id); f <- decode(format)
+        yield ParsedLine.NodeLine(PipelineNode.StreamingTable(i, f))
       case Array("node", id, "materialized-view", sql) =>
-        Some(ParsedLine.NodeLine(PipelineNode.MaterializedView(dec(id), dec(sql))))
+        for i <- decode(id); s <- decode(sql)
+        yield ParsedLine.NodeLine(PipelineNode.MaterializedView(i, s))
       case Array("node", id, "temporary-view", sql) =>
-        Some(ParsedLine.NodeLine(PipelineNode.TemporaryView(dec(id), dec(sql))))
+        for i <- decode(id); s <- decode(sql)
+        yield ParsedLine.NodeLine(PipelineNode.TemporaryView(i, s))
       case Array("node", id, "external", _) =>
-        Some(ParsedLine.NodeLine(PipelineNode.ExternalTable(dec(id))))
+        decode(id).map(i => ParsedLine.NodeLine(PipelineNode.ExternalTable(i)))
       case Array("edge", from, to) =>
-        Some(ParsedLine.EdgeLine(DependencyEdge(dec(from), dec(to))))
+        for f <- decode(from); t <- decode(to)
+        yield ParsedLine.EdgeLine(DependencyEdge(f, t))
       case Array("flow", name, target, rel) =>
         // v2 four-field flow line: bare Rel render, once = false.
-        algebra.RelCodec.parse(dec(rel)).toOption.map { relation =>
-          ParsedLine.FlowLine(Flow(dec(name), dec(target), relation))
-        }
+        for
+          n        <- decode(name)
+          t        <- decode(target)
+          r        <- decode(rel)
+          relation <- algebra.RelCodec.parse(r).left.map(e => s"flow '$n': $e")
+        yield ParsedLine.FlowLine(Flow(n, t, relation))
       case Array("flow", name, target, details, once) =>
         // v3 five-field flow line: FlowDetails render + once flag.
         for
-          d <- FlowCodec.parseDetails(dec(details)).toOption
+          n <- decode(name)
+          t <- decode(target)
+          d <- decode(details)
+          // cheap field first, so its diagnostic is not masked by the details parse
           o <- once match
-            case "t" => Some(true); case "f" => Some(false); case _ => None
-        yield ParsedLine.FlowLine(Flow(dec(name), dec(target), d, o))
-      case _ => None
+            case "t"   => Right(true)
+            case "f"   => Right(false)
+            case other => Left(s"flow '$n': once flag must be 't' or 'f', got '$other'")
+          details0 <- FlowCodec.parseDetails(d).left.map(e => s"flow '$n': $e")
+        yield ParsedLine.FlowLine(Flow(n, t, details0, o))
+      case fields =>
+        Left(s"unrecognized line (${fields.length} fields): '$line'")
 
   private[core] def enc(s: String): String = URLEncoder.encode(s, UTF_8)
+
+  /** TOTAL percent-decode — the primitive every parsing path must use.
+    *
+    * `URLDecoder.decode` throws `IllegalArgumentException` on a malformed
+    * escape (`%zz`, a truncated `%a`). That is an EXPECTED failure exactly
+    * where it matters most: the fragment string is the cross-classloader /
+    * cross-version boundary, so a plugin and a library out of lockstep (or a
+    * hand-edited manifest) can hand us input no amount of local correctness
+    * prevents. The codec contract is total parsing with the offending input
+    * named, so the failure is a `Left`, never a throw. */
+  private[core] def decode(s: String): Either[String, String] =
+    try Right(URLDecoder.decode(s, UTF_8))
+    catch
+      case e: IllegalArgumentException =>
+        Left(s"malformed percent-encoding in '$s' (${e.getMessage})")
+
+  /** Decode an atom ALREADY PROVEN decodable by [[decode]].
+    *
+    * Only for use after a single up-front validation pass, so the recursive
+    * descent need not thread an `Either` through every positional field:
+    * `RelCodec.Sexp.read` rejects any atom that cannot decode before the
+    * descent runs, and `parseLine` below decodes its own fields with [[decode]].
+    * It is NOT a parsing entry point — never call it on unvalidated input. */
   private[core] def dec(s: String): String = URLDecoder.decode(s, UTF_8)
