@@ -266,6 +266,12 @@ cache (and the metabuild's cached plugin closure) can otherwise serve stale resu
   the library (encoder, on the user's classpath) and the plugin (parser, in the metabuild);
   the plugin injects its own version of `sdp` by default, so a mixed pair is a config mistake,
   not a supported combination.
+- **The fragment string carries its own version** (`sdp-fragment/1`, since 0.2.2), so a mixed
+  pair says so. Decoding a fragment written by a newer `sdp` fails with the two versions named
+  and the fix ("align versions — the sbt plugin and the sdp library ship in lockstep") rather
+  than the old, misleading `unrecognized line (3 fields)`. A fragment with *no* header is
+  still accepted (that is everything `sdp <= 0.2.1` wrote); that back-compat window closes at
+  0.4, after which an unmarked fragment is itself the skew signal.
 - The manifest format (`sdp-manifest/2`, `/3` for AUTO CDC + `once`) is a frozen contract:
   breaking changes bump the version and keep the parser multilingual. SCD2 (roadmap S2) is
   the worked example of *not* bumping: its two track-history groups are optional and trailing
@@ -280,7 +286,8 @@ plugin after you republish a `-SNAPSHOT` — the consumer's metabuild caches the
 closure (coursier + its `project/target`). It bites specifically on **codec/format changes**
 (the manifest, `RelCodec`): the fragment *encoder* (the sdp library on the user classpath) and
 the *parser* (the sdp library inside the plugin metabuild) must move in lockstep, and a warm
-cache can bust only one side. Symptom: an undecodable fragment line,
+cache can bust only one side. Symptom: an undecodable fragment line — or, when the two sides
+disagree about the fragment format itself, an error naming both `sdp-fragment/N` versions —
 or `NoClassDefFoundError`/`ZipException` at plugin load.
 
 Fix (one command, from the main repo root), then restart the consumer's sbt session:
