@@ -1,4 +1,7 @@
 file spark/connect/catalog.proto
+  msg spark.connect.AnalyzeTable
+    field 1 table_name string
+    field 2 no_scan bool
   msg spark.connect.CacheTable
     field 1 table_name string
     field 2 storage_level optional message:spark.connect.StorageLevel oneof=_storage_level
@@ -29,7 +32,24 @@ file spark/connect/catalog.proto
     field 24 current_catalog message:spark.connect.CurrentCatalog oneof=cat_type
     field 25 set_current_catalog message:spark.connect.SetCurrentCatalog oneof=cat_type
     field 26 list_catalogs message:spark.connect.ListCatalogs oneof=cat_type
+    field 27 drop_table message:spark.connect.DropTable oneof=cat_type
+    field 28 drop_view message:spark.connect.DropView oneof=cat_type
+    field 29 create_database message:spark.connect.CreateDatabase oneof=cat_type
+    field 30 drop_database message:spark.connect.DropDatabase oneof=cat_type
+    field 31 list_partitions message:spark.connect.ListPartitions oneof=cat_type
+    field 32 list_views message:spark.connect.ListViews oneof=cat_type
+    field 33 get_table_properties message:spark.connect.GetTableProperties oneof=cat_type
+    field 34 get_create_table_string message:spark.connect.GetCreateTableString oneof=cat_type
+    field 35 truncate_table message:spark.connect.TruncateTable oneof=cat_type
+    field 36 analyze_table message:spark.connect.AnalyzeTable oneof=cat_type
   msg spark.connect.ClearCache
+  msg spark.connect.CreateDatabase
+    field 1 db_name string
+    field 2 if_not_exists bool
+    field 3 properties repeated message:spark.connect.CreateDatabase.PropertiesEntry
+  msg spark.connect.CreateDatabase.PropertiesEntry
+    field 1 key string
+    field 2 value string
   msg spark.connect.CreateExternalTable
     field 1 table_name string
     field 2 path optional string oneof=_path
@@ -53,13 +73,27 @@ file spark/connect/catalog.proto
   msg spark.connect.CurrentDatabase
   msg spark.connect.DatabaseExists
     field 1 db_name string
+  msg spark.connect.DropDatabase
+    field 1 db_name string
+    field 2 if_exists bool
+    field 3 cascade bool
   msg spark.connect.DropGlobalTempView
     field 1 view_name string
+  msg spark.connect.DropTable
+    field 1 table_name string
+    field 2 if_exists bool
+    field 3 purge bool
   msg spark.connect.DropTempView
     field 1 view_name string
+  msg spark.connect.DropView
+    field 1 view_name string
+    field 2 if_exists bool
   msg spark.connect.FunctionExists
     field 1 function_name string
     field 2 db_name optional string oneof=_db_name
+  msg spark.connect.GetCreateTableString
+    field 1 table_name string
+    field 2 as_serde bool
   msg spark.connect.GetDatabase
     field 1 db_name string
   msg spark.connect.GetFunction
@@ -68,6 +102,8 @@ file spark/connect/catalog.proto
   msg spark.connect.GetTable
     field 1 table_name string
     field 2 db_name optional string oneof=_db_name
+  msg spark.connect.GetTableProperties
+    field 1 table_name string
   msg spark.connect.IsCached
     field 1 table_name string
   msg spark.connect.ListCatalogs
@@ -80,7 +116,12 @@ file spark/connect/catalog.proto
   msg spark.connect.ListFunctions
     field 1 db_name optional string oneof=_db_name
     field 2 pattern optional string oneof=_pattern
+  msg spark.connect.ListPartitions
+    field 1 table_name string
   msg spark.connect.ListTables
+    field 1 db_name optional string oneof=_db_name
+    field 2 pattern optional string oneof=_pattern
+  msg spark.connect.ListViews
     field 1 db_name optional string oneof=_db_name
     field 2 pattern optional string oneof=_pattern
   msg spark.connect.RecoverPartitions
@@ -96,6 +137,8 @@ file spark/connect/catalog.proto
   msg spark.connect.TableExists
     field 1 table_name string
     field 2 db_name optional string oneof=_db_name
+  msg spark.connect.TruncateTable
+    field 1 table_name string
   msg spark.connect.UncacheTable
     field 1 table_name string
 file spark/connect/common.proto
@@ -403,6 +446,7 @@ file spark/connect/pipelines.proto
     field 1 dataflow_graph_id optional string oneof=_dataflow_graph_id
     field 2 definition_path optional string oneof=_definition_path
     field 3 flow_name optional string oneof=_flow_name
+    field 4 flow_identifier optional message:spark.connect.ResolvedIdentifier oneof=_flow_identifier
     field 999 extension repeated message:google.protobuf.Any
   msg spark.connect.PipelineCommand
     field 1 create_dataflow_graph message:spark.connect.PipelineCommand.CreateDataflowGraph oneof=command_type
@@ -413,6 +457,7 @@ file spark/connect/pipelines.proto
     field 6 define_sql_graph_elements message:spark.connect.PipelineCommand.DefineSqlGraphElements oneof=command_type
     field 7 get_query_function_execution_signal_stream message:spark.connect.PipelineCommand.GetQueryFunctionExecutionSignalStream oneof=command_type
     field 8 define_flow_query_function_result message:spark.connect.PipelineCommand.DefineFlowQueryFunctionResult oneof=command_type
+    field 9 execute_output_flows message:spark.connect.PipelineCommand.ExecuteOutputFlows oneof=command_type
     field 999 extension message:google.protobuf.Any oneof=command_type
   msg spark.connect.PipelineCommand.CreateDataflowGraph
     field 1 default_catalog optional string oneof=_default_catalog
@@ -430,7 +475,22 @@ file spark/connect/pipelines.proto
     field 6 source_code_location optional message:spark.connect.SourceCodeLocation oneof=_source_code_location
     field 7 relation_flow_details message:spark.connect.PipelineCommand.DefineFlow.WriteRelationFlowDetails oneof=details
     field 8 once optional bool oneof=_once
+    field 10 auto_cdc_flow_details message:spark.connect.PipelineCommand.DefineFlow.AutoCdcFlowDetails oneof=details
     field 999 extension message:google.protobuf.Any oneof=details
+    enum spark.connect.PipelineCommand.DefineFlow.SCDType
+      value 0 SCD_TYPE_UNSPECIFIED
+      value 1 SCD_TYPE_1
+  msg spark.connect.PipelineCommand.DefineFlow.AutoCdcFlowDetails
+    field 1 source optional string oneof=_source
+    field 2 keys repeated message:spark.connect.Expression
+    field 3 sequence_by optional message:spark.connect.Expression oneof=_sequence_by
+    field 6 apply_as_deletes optional message:spark.connect.Expression oneof=_apply_as_deletes
+    field 7 apply_as_truncates optional message:spark.connect.Expression oneof=_apply_as_truncates
+    field 8 column_list repeated message:spark.connect.Expression
+    field 9 except_column_list repeated message:spark.connect.Expression
+    field 10 stored_as_scd_type enum:spark.connect.PipelineCommand.DefineFlow.SCDType
+    field 14 ignore_null_updates_column_list repeated message:spark.connect.Expression
+    field 15 ignore_null_updates_except_column_list repeated message:spark.connect.Expression
   msg spark.connect.PipelineCommand.DefineFlow.Response
     field 1 flow_name optional string oneof=_flow_name
   msg spark.connect.PipelineCommand.DefineFlow.SqlConfEntry
@@ -442,6 +502,7 @@ file spark/connect/pipelines.proto
     field 1 flow_name optional string oneof=_flow_name
     field 2 dataflow_graph_id optional string oneof=_dataflow_graph_id
     field 3 relation optional message:spark.connect.Relation oneof=_relation
+    field 4 flow_identifier optional message:spark.connect.ResolvedIdentifier oneof=_flow_identifier
   msg spark.connect.PipelineCommand.DefineOutput
     field 1 dataflow_graph_id optional string oneof=_dataflow_graph_id
     field 2 output_name optional string oneof=_output_name
@@ -473,6 +534,12 @@ file spark/connect/pipelines.proto
     field 3 sql_text optional string oneof=_sql_text
   msg spark.connect.PipelineCommand.DropDataflowGraph
     field 1 dataflow_graph_id optional string oneof=_dataflow_graph_id
+  msg spark.connect.PipelineCommand.ExecuteOutputFlows
+    field 1 define_output optional message:spark.connect.PipelineCommand.DefineOutput oneof=_define_output
+    field 2 define_flows repeated message:spark.connect.PipelineCommand.DefineFlow
+    field 3 full_refresh optional bool oneof=_full_refresh
+    field 4 storage optional string oneof=_storage
+    field 999 extension repeated message:google.protobuf.Any
   msg spark.connect.PipelineCommand.GetQueryFunctionExecutionSignalStream
     field 1 dataflow_graph_id optional string oneof=_dataflow_graph_id
     field 2 client_id optional string oneof=_client_id
@@ -500,6 +567,7 @@ file spark/connect/pipelines.proto
     field 1 event message:spark.connect.PipelineEvent
   msg spark.connect.PipelineQueryFunctionExecutionSignal
     field 1 flow_names repeated string
+    field 2 flow_identifiers repeated message:spark.connect.ResolvedIdentifier
   msg spark.connect.SourceCodeLocation
     field 1 file_name optional string oneof=_file_name
     field 2 line_number optional int32 oneof=_line_number
@@ -677,6 +745,14 @@ file spark/connect/relations.proto
   msg spark.connect.NAReplace.Replacement
     field 1 old_value message:spark.connect.Expression.Literal
     field 2 new_value message:spark.connect.Expression.Literal
+  msg spark.connect.NearestByJoin
+    field 1 left message:spark.connect.Relation
+    field 2 right message:spark.connect.Relation
+    field 3 ranking_expression message:spark.connect.Expression
+    field 4 num_results int32
+    field 5 join_type string
+    field 6 mode string
+    field 7 direction string
   msg spark.connect.Offset
     field 1 input message:spark.connect.Relation
     field 2 offset int32
@@ -689,6 +765,7 @@ file spark/connect/relations.proto
       value 0 PARSE_FORMAT_UNSPECIFIED
       value 1 PARSE_FORMAT_CSV
       value 2 PARSE_FORMAT_JSON
+      value 3 PARSE_FORMAT_XML
   msg spark.connect.Parse.OptionsEntry
     field 1 key string
     field 2 value string
@@ -718,6 +795,7 @@ file spark/connect/relations.proto
     field 3 options repeated message:spark.connect.Read.DataSource.OptionsEntry
     field 4 paths repeated string
     field 5 predicates repeated string
+    field 6 source_name optional string oneof=_source_name
   msg spark.connect.Read.DataSource.OptionsEntry
     field 1 key string
     field 2 value string
@@ -773,6 +851,8 @@ file spark/connect/relations.proto
     field 43 unresolved_table_valued_function message:spark.connect.UnresolvedTableValuedFunction oneof=rel_type
     field 44 lateral_join message:spark.connect.LateralJoin oneof=rel_type
     field 45 chunked_cached_local_relation message:spark.connect.ChunkedCachedLocalRelation oneof=rel_type
+    field 46 relation_changes message:spark.connect.RelationChanges oneof=rel_type
+    field 47 nearest_by_join message:spark.connect.NearestByJoin oneof=rel_type
     field 90 fill_na message:spark.connect.NAFill oneof=rel_type
     field 91 drop_na message:spark.connect.NADrop oneof=rel_type
     field 92 replace message:spark.connect.NAReplace oneof=rel_type
@@ -788,6 +868,13 @@ file spark/connect/relations.proto
     field 300 ml_relation message:spark.connect.MlRelation oneof=rel_type
     field 998 extension message:google.protobuf.Any oneof=rel_type
     field 999 unknown message:spark.connect.Unknown oneof=rel_type
+  msg spark.connect.RelationChanges
+    field 1 unparsed_identifier string
+    field 2 options repeated message:spark.connect.RelationChanges.OptionsEntry
+    field 3 is_streaming bool
+  msg spark.connect.RelationChanges.OptionsEntry
+    field 1 key string
+    field 2 value string
   msg spark.connect.RelationCommon
     field 1 source_info string
     field 2 plan_id optional int64 oneof=_plan_id

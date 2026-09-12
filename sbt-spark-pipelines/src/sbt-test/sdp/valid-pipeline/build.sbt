@@ -10,7 +10,7 @@ lazy val root = (project in file("."))
   .enablePlugins(dev.sdp.plugin.SparkPipelinesPlugin)
   .settings(
     name         := "valid-pipeline",
-    scalaVersion := "3.8.4",
+    scalaVersion := "3.9.0",
     // the sdp library is auto-injected by the plugin in lockstep;
     // declaring the DSL explicitly here is harmless and documents the surface.
     libraryDependencies += "io.github.nestor10" %% "sdp" % pluginVersion,

@@ -31,7 +31,7 @@ ThisBuild / organization := "io.github.nestor10"
 // Version is OWNED BY sbt-dynver (via sbt-ci-release): a `vX.Y.Z` git tag
 // publishes X.Y.Z; between tags you get X.Y.Z+N-<hash>-SNAPSHOT. Do not set
 // `ThisBuild / version` — see RELEASING.md.
-ThisBuild / scalaVersion := "3.8.4"
+ThisBuild / scalaVersion := "3.9.0"
 
 // ---------------------------------------------------------------------
 // Publishing / POM metadata — required for Maven Central (Sonatype
@@ -39,13 +39,13 @@ ThisBuild / scalaVersion := "3.8.4"
 // `publishSettings` below; the root aggregate sets `publish / skip`.
 // ---------------------------------------------------------------------
 ThisBuild / versionScheme := Some("early-semver")
-ThisBuild / homepage      := Some(url("https://github.com/Nestor10/spark-declarative-pipelines-scala"))
+ThisBuild / homepage      := Some(uri("https://github.com/Nestor10/spark-declarative-pipelines-scala").toURL)
 ThisBuild / licenses      := Seq(
-  "Apache-2.0" -> url("https://www.apache.org/licenses/LICENSE-2.0")
+  "Apache-2.0" -> uri("https://www.apache.org/licenses/LICENSE-2.0").toURL
 )
 ThisBuild / scmInfo := Some(
   ScmInfo(
-    url("https://github.com/Nestor10/spark-declarative-pipelines-scala"),
+    uri("https://github.com/Nestor10/spark-declarative-pipelines-scala").toURL,
     "scm:git:git@github.com:Nestor10/spark-declarative-pipelines-scala.git",
   )
 )
@@ -54,7 +54,7 @@ ThisBuild / developers := List(
     id = "Nestor10",
     name = "Eric Smith",
     email = "ericsmith.lpi@gmail.com",
-    url = url("https://github.com/Nestor10"),
+    url = uri("https://github.com/Nestor10").toURL,
   )
 )
 
@@ -78,7 +78,7 @@ ThisBuild / scalacOptions ++= Seq(
 )
 
 // Pin ZIO once for every module that needs it.
-val zioVersion = "2.1.15"  // TODO: verify against the latest 2.1.x before merging
+val zioVersion = "2.1.26"
 
 // ---------------------------------------------------------------------
 // sdp — THE library: pure domain core + ZIO app services + runtime
@@ -96,12 +96,15 @@ lazy val sdp = (project in file("sdp"))
       // contract for the SDP PipelinesHandler, identical to the server's by
       // construction. intransitive: keep Spark's 2.13 closure out of our
       // graph; protobuf-java is the one real runtime need.
-      ("org.apache.spark" % "spark-connect-common_2.13" % "4.1.2").intransitive(),
+      // 4.2.0: adds AutoCdcFlowDetails (SCD1/SCD2) + once flows to the wire —
+      // see PipelineProtoEncoder GATE(spark-4.2).
+      ("org.apache.spark" % "spark-connect-common_2.13" % "4.2.0").intransitive(),
       // Spark 4.x generates protobuf code against the 4.x runtime
-      // (RuntimeVersion checks); ../spark/pom.xml pins 4.33.x.
+      // (RuntimeVersion checks); Spark v4.2.0 pom pins 4.33.5 — match it,
+      // don't chase latest.
       "com.google.protobuf" % "protobuf-java" % "4.33.5",
       // gRPC runtime for the SparkConnectServiceGrpc stubs that ship inside
-      // spark-connect-common. Version from ../spark/pom.xml (io.grpc.version).
+      // spark-connect-common. Spark v4.2.0 pom pins io.grpc.version 1.76.0.
       "io.grpc" % "grpc-netty-shaded" % "1.76.0",
       "io.grpc" % "grpc-stub"         % "1.76.0",
       "io.grpc" % "grpc-protobuf"     % "1.76.0",
