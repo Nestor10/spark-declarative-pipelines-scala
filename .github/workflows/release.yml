@@ -10,7 +10,41 @@ on:
       - "v*"
 
 jobs:
+  # A tag is not a verification. A push to a branch gets ci.yml; a tag push
+  # used to get nothing but a publish — so a red tree could be released, and a
+  # release to Central is immutable. This job is the gate: `publish` declares
+  # `needs: verify`, and GitHub SKIPS a dependent job when its dependency
+  # fails, so a failing compile/test/scripted run provably blocks the publish.
+  # No secrets here — they stay confined to the publish job below.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: sbt
+
+      - name: Setup sbt
+        uses: sbt/setup-sbt@v1
+
+      - name: Compile
+        run: sbt Test/compile
+
+      - name: Library tests
+        run: sbt sdp/testFull
+
+      # Same suite ci.yml runs: sandbox consumer builds that publishLocal both
+      # artifacts, then exercise discovery, validation, caching, cycles.
+      - name: Plugin scripted tests
+        run: sbt sbtSparkPipelines/scripted
+
   publish:
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
