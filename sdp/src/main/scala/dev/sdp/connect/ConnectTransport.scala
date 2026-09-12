@@ -4,7 +4,9 @@ import java.util.concurrent.TimeUnit
 
 import io.grpc.{ManagedChannel, ManagedChannelBuilder, Metadata}
 import io.grpc.stub.{AbstractStub, MetadataUtils}
+import org.apache.spark.connect.proto as sc
 import zio.*
+import zio.stream.*
 
 import PipelinesRegistration.RegistrationError
 
@@ -154,3 +156,114 @@ private[connect] object ConnectChannel:
     * deliberately skip this — see [[TransportConfig.DefaultDeadlineSeconds]]. */
   def withDeadline[S <: AbstractStub[S]](stub: S, config: TransportConfig): S =
     stub.withDeadlineAfter(config.deadlineSeconds, TimeUnit.SECONDS)
+
+/** **The seam.** Everything the three Spark Connect clients
+  * ([[PipelinesRegistration]], [[CatalogSeeder]], [[PlanAnalysis]]) actually
+  * need from a server, and nothing else: send a plan, read the responses back.
+  *
+  * Why a trait here and nowhere else (P3.2). The ZIO service pattern earns its
+  * keep exactly where a dependency is *genuinely* swappable — and this one is:
+  * the live implementation is a gRPC channel, and a test's implementation is a
+  * script of canned responses. Before this existed, every failure-path decision
+  * in the clients (which gRPC status becomes `TransportFailure` vs
+  * `ServerRejected`, how a mid-sequence `DefineFlow` rejection aborts the
+  * sequence, what a run-stream event turns into) could only be exercised with a
+  * container on the other end, which is why almost none of it was. Nothing else
+  * in this package gets a trait: the encoders and the version gate are pure
+  * functions with one implementation, and wrapping those in accessors would be
+  * ceremony.
+  *
+  * The error channel is deliberately `Throwable`, not [[RegistrationError]]:
+  * the *mapping* from a gRPC status to a typed verdict is the thing under test,
+  * so it must live in the client (`PipelinesRegistration.grpcError`,
+  * `PlanAnalysis.analysisError`, `CatalogSeeder`'s per-statement mapping), not
+  * behind the seam where a stub would have to fake it.
+  *
+  * Responses arrive as a `ZStream` rather than a materialized `List` because
+  * that is what gRPC gives us (a blocking iterator) and because the partial
+  * responses seen *before* a failure are the error's best context — a caller
+  * can accumulate as it pulls. Zionomicon ch. 36: server streaming = `ZStream`.
+  */
+private[connect] trait ConnectTransport:
+
+  /** `sc://host:port` — for log lines and handshake messages only. */
+  def endpoint: String
+
+  /** Send a plan whose execution is *metadata work*: registration commands and
+    * seed SQL. The per-RPC deadline from [[TransportConfig]] applies, so a
+    * wedged server cannot hang a build forever. */
+  def execute(request: sc.ExecutePlanRequest): ZStream[Any, Throwable, sc.ExecutePlanResponse]
+
+  /** Send a plan whose execution is *the run itself* (`StartRun`). Deliberately
+    * NOT deadlined: a real run legitimately takes minutes, and the caller
+    * bounds it by racing the drain against [[cancel]]. */
+  def executeUnbounded(request: sc.ExecutePlanRequest): ZStream[Any, Throwable, sc.ExecutePlanResponse]
+
+  /** One `AnalyzePlan` round trip (schema inference, the version handshake). */
+  def analyze(request: sc.AnalyzePlanRequest): IO[Throwable, sc.AnalyzePlanResponse]
+
+  /** Force-close the transport, unblocking a pull parked in a never-terminating
+    * run so a timeout can detach (ch. 8 — interruption waits for finalizers). */
+  def cancel: UIO[Unit]
+
+private[connect] object ConnectTransport:
+
+  /** The live transport over a scoped [[ConnectChannel]], as an effect.
+    *
+    * `ZIO[Scope, …]` and not a plain value because the channel is a resource;
+    * `Scope` in the *caller's* environment and not inside this effect because
+    * [[PipelinesRegistration.register]] hands back a `RunHandle` whose stream is
+    * consumed after `register` returns — the channel must outlive the effect
+    * that built it, which is precisely what a caller-owned scope expresses.
+    */
+  def scoped(
+      host: String,
+      port: Int,
+      config: TransportConfig,
+  ): ZIO[Scope, RegistrationError, ConnectTransport] =
+    ConnectChannel.scoped(host, port, config).map(new ChannelTransport(_, config, s"sc://$host:$port"))
+
+  /** The same thing as a layer, for the callers whose whole interaction fits
+    * inside one effect (`CatalogSeeder.run`, `PlanAnalysis.analyzeSchema`):
+    * there the resource's lifetime IS the effect's, so `.provide` closing the
+    * layer's scope on completion is exactly right. */
+  def live(
+      host: String,
+      port: Int,
+      config: TransportConfig,
+  ): ZLayer[Any, RegistrationError, ConnectTransport] =
+    ZLayer.scoped(scoped(host, port, config))
+
+  /** The gRPC implementation: one channel, one blocking stub, responses pulled
+    * one at a time on the blocking pool with `attemptBlockingInterrupt` so an
+    * interrupt actually lands on a parked `next()`. */
+  private final class ChannelTransport(
+      channel: ManagedChannel,
+      config: TransportConfig,
+      val endpoint: String,
+  ) extends ConnectTransport:
+
+    private val stub = sc.SparkConnectServiceGrpc.newBlockingStub(channel)
+
+    def execute(request: sc.ExecutePlanRequest): ZStream[Any, Throwable, sc.ExecutePlanResponse] =
+      responses(ConnectChannel.withDeadline(stub, config), request)
+
+    def executeUnbounded(request: sc.ExecutePlanRequest): ZStream[Any, Throwable, sc.ExecutePlanResponse] =
+      responses(stub, request)
+
+    def analyze(request: sc.AnalyzePlanRequest): IO[Throwable, sc.AnalyzePlanResponse] =
+      ZIO.attemptBlockingInterrupt(ConnectChannel.withDeadline(stub, config).analyzePlan(request))
+
+    def cancel: UIO[Unit] = ZIO.succeed { val _ = channel.shutdownNow() }
+
+    private def responses(
+        s: sc.SparkConnectServiceGrpc.SparkConnectServiceBlockingStub,
+        request: sc.ExecutePlanRequest,
+    ): ZStream[Any, Throwable, sc.ExecutePlanResponse] =
+      ZStream
+        .fromZIO(ZIO.attemptBlockingInterrupt(s.executePlan(request)))
+        .flatMap { it =>
+          ZStream.unfoldZIO(it) { i =>
+            ZIO.attemptBlockingInterrupt(if i.hasNext then Some((i.next(), i)) else None)
+          }
+        }

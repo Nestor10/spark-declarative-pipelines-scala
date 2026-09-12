@@ -99,19 +99,47 @@ object PipelinesRegistration:
       // fork that reports a version we would read wrongly.
       versionCheck: Boolean = true,
   ): ZIO[Scope, RegistrationError, RunHandle] =
-    ConnectChannel.scoped(host, port, transport).flatMap { ch =>
-      val stub      = sc.SparkConnectServiceGrpc.newBlockingStub(ch)
+    ConnectTransport.scoped(host, port, transport).flatMap { t =>
+      registerOn(
+        manifest,
+        storage,
+        dry,
+        sqlConf,
+        defaultCatalog,
+        defaultDatabase,
+        versionCheck,
+      ).provideEnvironment(ZEnvironment[ConnectTransport](t))
+    }
+
+  /** The registration sequence itself, expressed against the [[ConnectTransport]]
+    * seam instead of a host/port pair — so a stub transport can drive every
+    * branch of it offline (`PipelinesRegistrationSpec`). [[register]] is the
+    * thin forwarder that builds the live transport; nothing else changed.
+    *
+    * Contravariant environment requirement (Zionomicon ch. 9/13): the effect
+    * *states* that it needs a transport and stays agnostic about where it comes
+    * from. The caller decides — a channel in production, a script in a test.
+    */
+  private[connect] def registerOn(
+      manifest: PipelineManifest,
+      storage: String,
+      dry: Boolean,
+      sqlConf: Map[String, String],
+      defaultCatalog: Option[String],
+      defaultDatabase: Option[String],
+      versionCheck: Boolean,
+  ): ZIO[ConnectTransport, RegistrationError, RunHandle] =
+    ZIO.serviceWithZIO[ConnectTransport] { transport =>
       val sessionId = UUID.randomUUID().toString
 
       for
         // Handshake FIRST: ask what the server is, and refuse before a single
         // dataset is registered if the pipeline needs a newer wire than it
         // speaks. Nothing is created server-side when this fails.
-        _ <- handshake(stub, sessionId, transport, manifest, s"sc://$host:$port", versionCheck)
+        _ <- handshake(transport, sessionId, manifest, versionCheck)
         created <- execute(
-                     stub,
-                     sessionId,
                      transport,
+                     sessionId,
                      PipelineProtoEncoder.createDataflowGraph(
                        defaultCatalog = defaultCatalog,
                        defaultDatabase = defaultDatabase,
@@ -124,6 +152,39 @@ object PipelinesRegistration:
               r.getPipelineCommandResult.getCreateDataflowGraphResult.getDataflowGraphId
           })
           .orElseFail(RegistrationError.ServerRejected("CreateDataflowGraph returned no graph id"))
+        // From here on a graph EXISTS server-side, so every exit that is not a
+        // started run must take it away again — see `defineAll`.
+        _ <- defineAll(transport, sessionId, graphId, manifest)
+      yield RunHandle(
+        graphId,
+        runStream(transport, sessionId, PipelineProtoEncoder.startRun(graphId, dry, storage)),
+        cancel = transport.cancel,
+      )
+    }
+
+  /** Send every `DefineOutput`/`DefineFlow`, and on ANY non-success drop the
+    * server-side graph again (partial-registration hygiene, roadmap P3.2).
+    *
+    * `CreateDataflowGraph` has already registered a graph in the server's
+    * `DataflowGraphRegistry`. If the fifth `DefineFlow` is rejected, the first
+    * four datasets are still sitting there attached to a graph nobody will ever
+    * start — a leak that accumulates one entry per failed `~sdpDryRun` save.
+    * `DropDataflowGraph` (pipelines.proto field 4, handled by `PipelinesHandler`
+    * since 4.1.0 — checked against `../spark`) is the server's own undo.
+    *
+    * `onError` and not `catchAll`, because interruption must clean up too (the
+    * watch loop's cycle can be cancelled mid-sequence). The drop is best-effort
+    * and `.ignore`d: if the transport is what failed, the drop cannot succeed
+    * either, and the ORIGINAL verdict is the one the author needs to read.
+    */
+  private def defineAll(
+      transport: ConnectTransport,
+      sessionId: String,
+      graphId: String,
+      manifest: PipelineManifest,
+  ): IO[RegistrationError, Unit] =
+    val send =
+      for
         // Encoding is pure but gated: an unencodable construct throws
         // UnsupportedWireFeature. Refine it into the typed channel so the
         // runner renders a sentence instead of a defect trace.
@@ -132,13 +193,12 @@ object PipelinesRegistration:
           .refineOrDie { case e: UnsupportedWireFeature =>
             RegistrationError.UnsupportedWire(e.getMessage)
           }
-        _ <- ZIO.foreachDiscard(commands)(execute(stub, sessionId, transport, _))
-      yield RunHandle(
-        graphId,
-        runStream(stub, sessionId, PipelineProtoEncoder.startRun(graphId, dry, storage)),
-        cancel = ZIO.succeed { ch.shutdownNow(); () },
-      )
-    }
+        _ <- ZIO.foreachDiscard(commands)(execute(transport, sessionId, _))
+      yield ()
+
+    send.onError(_ =>
+      execute(transport, sessionId, PipelineProtoEncoder.dropDataflowGraph(graphId)).ignore
+    )
 
   /** The server-version handshake: one `AnalyzePlan`/`SparkVersion` round trip,
     * then the pure [[VersionGate]].
@@ -157,20 +217,19 @@ object PipelinesRegistration:
     * `versionCheck = false` skips the round trip entirely and says so.
     */
   private def handshake(
-      stub: sc.SparkConnectServiceGrpc.SparkConnectServiceBlockingStub,
+      transport: ConnectTransport,
       sessionId: String,
-      transport: TransportConfig,
       manifest: PipelineManifest,
-      endpoint: String,
       versionCheck: Boolean,
   ): IO[RegistrationError, Unit] =
+    val endpoint = transport.endpoint
     if !versionCheck then
       ZIO.logWarning(
         s"server-version check DISABLED for $endpoint — a construct newer than the server " +
           "will fail confusingly or silently misbehave (proto3 drops unknown fields)"
       )
     else
-      PlanAnalysis.sparkVersionOn(stub, sessionId, transport).either.flatMap {
+      PlanAnalysis.sparkVersionOn(transport, sessionId).either.flatMap {
         case Left(err) =>
           ZIO.logWarning(
             s"could not resolve the Spark version of $endpoint (${err.describe}) — " +
@@ -201,17 +260,12 @@ object PipelinesRegistration:
     * events leading up to a failure have already been emitted (and logged), so
     * they are the error context. */
   private def runStream(
-      stub: sc.SparkConnectServiceGrpc.SparkConnectServiceBlockingStub,
+      transport: ConnectTransport,
       sessionId: String,
       command: sc.PipelineCommand,
   ): ZStream[Any, RegistrationError, RunProgress] =
-    ZStream
-      .fromZIO(ZIO.attemptBlockingInterrupt(stub.executePlan(executeRequest(sessionId, command))))
-      .flatMap { responses =>
-        ZStream.unfoldZIO(responses) { it =>
-          ZIO.attemptBlockingInterrupt(if it.hasNext then Some((it.next(), it)) else None)
-        }
-      }
+    transport
+      .executeUnbounded(executeRequest(sessionId, command))
       .collect {
         case r if r.hasPipelineEventResult && r.getPipelineEventResult.getEvent.getMessage.nonEmpty =>
           RunProgress.parse(r.getPipelineEventResult.getEvent.getMessage)
@@ -226,24 +280,25 @@ object PipelinesRegistration:
     * messages, and an error without them just says "something failed".
     */
   private def execute(
-      stub: sc.SparkConnectServiceGrpc.SparkConnectServiceBlockingStub,
+      transport: ConnectTransport,
       sessionId: String,
-      transport: TransportConfig,
       command: sc.PipelineCommand,
   ): IO[RegistrationError, List[sc.ExecutePlanResponse]] =
     ZIO.suspendSucceed {
-      val request  = executeRequest(sessionId, command)
+      // Accumulate as we pull: the events that arrived BEFORE the failure are
+      // the analyzer's real diagnostics, and `grpcError` attaches them. (This
+      // is why the seam yields a stream and not a materialized list — a
+      // `List`-returning transport would have thrown that context away.)
       val received = scala.collection.mutable.ListBuffer.empty[sc.ExecutePlanResponse]
-      ZIO
-        // Registration commands only write metadata: a deadline keeps a wedged
-        // or unreachable-but-accepting server from hanging the build forever,
-        // and attemptBlockingInterrupt lets an interrupt actually land.
-        .attemptBlockingInterrupt {
-          val it = ConnectChannel.withDeadline(stub, transport).executePlan(request)
-          while it.hasNext do received += it.next()
-          received.toList
-        }
+      transport
+        // `execute` (not `executeUnbounded`): registration commands only write
+        // metadata, so the per-RPC deadline applies and a wedged server cannot
+        // hang the build forever.
+        .execute(executeRequest(sessionId, command))
+        .tap(r => ZIO.succeed { val _ = received += r })
+        .runDrain
         .mapError(grpcError(_, eventStrings(received.toList)))
+        .as(received.toList)
     }
 
   private def executeRequest(sessionId: String, command: sc.PipelineCommand): sc.ExecutePlanRequest =
@@ -261,8 +316,11 @@ object PipelinesRegistration:
       .filter(_.nonEmpty)
 
   /** Map a gRPC failure to the typed channel, attaching server events seen
-    * before it (the analyzer's real diagnostics arrive as stream messages). */
-  private def grpcError(cause: Throwable, events: List[String]): RegistrationError =
+    * before it (the analyzer's real diagnostics arrive as stream messages).
+    *
+    * `private[connect]` so the mapping TABLE is unit-testable directly — it is
+    * the one decision in this file that used to need a live server to observe. */
+  private[connect] def grpcError(cause: Throwable, events: List[String]): RegistrationError =
     val context = if events.isEmpty then "" else events.mkString("\nserver events:\n  - ", "\n  - ", "")
     cause match
             case e: StatusRuntimeException if e.getStatus.getCode == io.grpc.Status.Code.UNAVAILABLE =>

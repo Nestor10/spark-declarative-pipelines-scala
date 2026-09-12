@@ -35,35 +35,35 @@ object CatalogSeeder:
       // Transport security + per-RPC deadline; plaintext/anonymous by default.
       transport: TransportConfig = TransportConfig.plaintext,
   ): IO[RegistrationError, Unit] =
-    ZIO.scoped {
-      ConnectChannel.scoped(host, port, transport).flatMap { channel =>
-        val stub      = sc.SparkConnectServiceGrpc.newBlockingStub(channel)
-        val sessionId = UUID.randomUUID().toString
-        ZIO.foreachDiscard(statements)(sql => exec(stub, sessionId, transport, sql))
-      }
+    runOn(statements).provide(ConnectTransport.live(host, port, transport))
+
+  /** The seam-facing form: seed over a transport the caller supplies. One
+    * session for the whole list, so temp state and `USE`/`SET` carry across
+    * statements; fails fast on the first rejection, naming the statement. */
+  private[connect] def runOn(statements: List[String]): ZIO[ConnectTransport, RegistrationError, Unit] =
+    ZIO.serviceWithZIO[ConnectTransport] { transport =>
+      val sessionId = UUID.randomUUID().toString
+      ZIO.foreachDiscard(statements)(sql => exec(transport, sessionId, sql))
     }
 
   private def exec(
-      stub: sc.SparkConnectServiceGrpc.SparkConnectServiceBlockingStub,
+      transport: ConnectTransport,
       sessionId: String,
-      transport: TransportConfig,
       sql: String,
   ): IO[RegistrationError, Unit] =
-    ZIO
-      .attemptBlockingInterrupt {
-        val request = sc.ExecutePlanRequest
+    val request = sc.ExecutePlanRequest
+      .newBuilder()
+      .setSessionId(sessionId)
+      .setUserContext(sc.UserContext.newBuilder().setUserId("sbt-spark-pipelines"))
+      .setPlan(
+        sc.Plan
           .newBuilder()
-          .setSessionId(sessionId)
-          .setUserContext(sc.UserContext.newBuilder().setUserId("sbt-spark-pipelines"))
-          .setPlan(
-            sc.Plan
-              .newBuilder()
-              .setRoot(sc.Relation.newBuilder().setSql(sc.SQL.newBuilder().setQuery(sql)))
-          )
-          .build()
-        val it = ConnectChannel.withDeadline(stub, transport).executePlan(request)
-        while it.hasNext do { val _ = it.next() } // drain — eager DDL/DML runs here
-      }
+          .setRoot(sc.Relation.newBuilder().setSql(sc.SQL.newBuilder().setQuery(sql)))
+      )
+      .build()
+    transport
+      .execute(request) // drain — eager DDL/DML runs server-side as we pull
+      .runDrain
       .mapError {
         case e: StatusRuntimeException =>
           RegistrationError.ServerRejected(s"${e.getStatus.getCode}: ${e.getStatus.getDescription}\n  in: $sql")

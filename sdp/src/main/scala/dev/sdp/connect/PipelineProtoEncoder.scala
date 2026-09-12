@@ -115,6 +115,23 @@ object PipelineProtoEncoder:
       )
       .build()
 
+  /** The server's own undo for step 1: drop the graph and stop anything
+    * attached to it (`pipelines.proto` field 4 — `DropDataflowGraph`, handled
+    * by `PipelinesHandler` since the 4.1.0 RELEASE, verified in `../spark`).
+    *
+    * Used only on the abort path: once `CreateDataflowGraph` has succeeded, a
+    * later `DefineFlow` rejection would otherwise leave a half-populated graph
+    * in the server's `DataflowGraphRegistry` forever — one leaked entry per
+    * failed `~sdpDryRun` save. See `PipelinesRegistration.defineAll`.
+    */
+  def dropDataflowGraph(graphId: String): sc.PipelineCommand =
+    sc.PipelineCommand
+      .newBuilder()
+      .setDropDataflowGraph(
+        sc.PipelineCommand.DropDataflowGraph.newBuilder().setDataflowGraphId(graphId)
+      )
+      .build()
+
   // ------------------------------------------------------------------
   // outputs
   // ------------------------------------------------------------------

@@ -36,22 +36,52 @@ object PlanAnalysis:
     * can.
     */
   private[connect] def sparkVersionOn(
-      stub: sc.SparkConnectServiceGrpc.SparkConnectServiceBlockingStub,
+      transport: ConnectTransport,
       sessionId: String,
-      transport: TransportConfig,
   ): IO[RegistrationError, String] =
-    ZIO
-      .attemptBlockingInterrupt {
-        val request = sc.AnalyzePlanRequest
+    transport
+      .analyze(
+        sc.AnalyzePlanRequest
           .newBuilder()
           .setSessionId(sessionId)
           .setUserContext(sc.UserContext.newBuilder().setUserId("sbt-spark-pipelines"))
           .setSparkVersion(sc.AnalyzePlanRequest.SparkVersion.newBuilder())
           .build()
-        ConnectChannel.withDeadline(stub, transport).analyzePlan(request).getSparkVersion.getVersion
-      }
+      )
+      .map(_.getSparkVersion.getVersion)
       .mapError(analysisError)
 
+  /** Ask the analyzer for a relation's schema on a transport the caller owns —
+    * the seam-facing form, drivable by a stub transport offline. */
+  private[connect] def analyzeSchemaOn(
+      relation: sc.Relation
+  ): ZIO[ConnectTransport, RegistrationError, List[SchemaField]] =
+    ZIO.serviceWithZIO[ConnectTransport] { transport =>
+      transport
+        .analyze(
+          sc.AnalyzePlanRequest
+            .newBuilder()
+            .setSessionId(UUID.randomUUID().toString)
+            .setUserContext(sc.UserContext.newBuilder().setUserId("sbt-spark-pipelines"))
+            .setSchema(
+              sc.AnalyzePlanRequest.Schema
+                .newBuilder()
+                .setPlan(sc.Plan.newBuilder().setRoot(relation))
+            )
+            .build()
+        )
+        .map { response =>
+          response.getSchema.getSchema.getStruct.getFieldsList.asScala.toList.map { field =>
+            SchemaField(field.getName, field.getDataType.getKindCase.name.toLowerCase)
+          }
+        }
+        .mapError(analysisError)
+    }
+
+  /** The (host, port) entry point every call site already uses. A thin
+    * forwarder: build the live transport, run [[analyzeSchemaOn]] on it. The
+    * whole interaction fits inside this effect, so the LAYER form is the right
+    * one here — its scope closes when the effect completes. */
   def analyzeSchema(
       host: String,
       port: Int,
@@ -59,33 +89,7 @@ object PlanAnalysis:
       // Transport security + per-RPC deadline; plaintext/anonymous by default.
       transport: TransportConfig = TransportConfig.plaintext,
   ): IO[RegistrationError, List[SchemaField]] =
-    ZIO.scoped {
-      ConnectChannel
-        .scoped(host, port, transport)
-        .flatMap { channel =>
-          ZIO
-            .attemptBlockingInterrupt {
-              val stub = ConnectChannel
-                .withDeadline(sc.SparkConnectServiceGrpc.newBlockingStub(channel), transport)
-              val request = sc.AnalyzePlanRequest
-                .newBuilder()
-                .setSessionId(UUID.randomUUID().toString)
-                .setUserContext(sc.UserContext.newBuilder().setUserId("sbt-spark-pipelines"))
-                .setSchema(
-                  sc.AnalyzePlanRequest.Schema
-                    .newBuilder()
-                    .setPlan(sc.Plan.newBuilder().setRoot(relation))
-                )
-                .build()
-
-              val schema = stub.analyzePlan(request).getSchema.getSchema
-              schema.getStruct.getFieldsList.asScala.toList.map { field =>
-                SchemaField(field.getName, field.getDataType.getKindCase.name.toLowerCase)
-              }
-            }
-            .mapError(analysisError)
-        }
-    }
+    analyzeSchemaOn(relation).provide(ConnectTransport.live(host, port, transport))
 
   /** Shared failure mapping for every `AnalyzePlan` call here: a gRPC status is
     * the server's verdict, anything else is transport. */

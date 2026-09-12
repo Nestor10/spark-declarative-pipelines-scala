@@ -144,12 +144,8 @@ object AutoCdcE2eSpec extends ZIOSpecDefault:
     * `PipelinesRegistration.register` makes before `CreateDataflowGraph`. */
   private def serverVersion(server: SparkConnectTestServer.Server) =
     ZIO.scoped {
-      ConnectChannel.scoped(server.host, server.port, TransportConfig.plaintext).flatMap { ch =>
-        PlanAnalysis.sparkVersionOn(
-          sc.SparkConnectServiceGrpc.newBlockingStub(ch),
-          UUID.randomUUID().toString,
-          TransportConfig.plaintext,
-        )
+      ConnectTransport.scoped(server.host, server.port, TransportConfig.plaintext).flatMap { transport =>
+        PlanAnalysis.sparkVersionOn(transport, UUID.randomUUID().toString)
       }
     }
 
