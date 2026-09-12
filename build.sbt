@@ -75,6 +75,17 @@ lazy val publishSettings = Seq(
   publishMavenStyle := true,
 )
 
+// Sonatype Central's server-side processing is the release bottleneck and it is
+// NOT ours: measured 2026-09-12, the whole sbt side (compile+sign+bundle+upload)
+// takes ~47 s, then the plugin polls Central until PUBLISHED — 49 min (v0.2.0)
+// and 57.5 min (v0.2.1), the latter 2.5 min under sbt-sonatype's default 60-min
+// timeout, whose expiry marks the run RED while Sonatype publishes anyway (and
+// re-running the job on that false failure would double-deploy). Nothing
+// client-side makes the artifact appear sooner, so: wait generously, never
+// serialize work on the green check — consumers should poll repo1 for the
+// version instead (that is exactly what the example-refresh flow does).
+ThisBuild / sonatypeTimeoutMillis := 3 * 60 * 60 * 1000 // 3h, was 60min default
+
 ThisBuild / scalacOptions ++= Seq(
   "-deprecation",
   "-feature",
