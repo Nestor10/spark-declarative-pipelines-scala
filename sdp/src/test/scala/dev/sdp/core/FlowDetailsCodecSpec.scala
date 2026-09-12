@@ -114,6 +114,63 @@ object FlowDetailsCodecSpec extends ZIOSpecDefault:
       assertTrue(m.formatVersion == 3, PipelineManifest.parse(m.render) == Right(m))
     },
 
+    // ------------------------------------------------------------ SCD2 (S2)
+
+    test("v3 byte-compat: an SCD1 details render is EXACTLY the pre-SCD2 token stream") {
+      // The frozen bytes. SCD2 adds two groups to the grammar, but they are
+      // optional and trailing and are emitted only when non-empty, so every
+      // manifest that does not use SCD2 — i.e. every manifest that exists —
+      // renders unchanged: no header bump, no cache churn, no fragment skew.
+      val minimal = FlowDetails.AutoCdc("src", List(Ex.Col("k")), Ex.Col("s"))
+      assertTrue(
+        FlowCodec.renderDetails(minimal) ==
+          "autocdc src scd1 keys 1 %28col+k%29 seq %28col+s%29 " +
+          "del 0 trunc 0 cols 0 except 0 ignidx 0 ignexc 0",
+        // and the fully-populated SCD1 flow mentions neither new tag
+        !FlowCodec.renderDetails(autoCdcDetails).contains(" track "),
+        !FlowCodec.renderDetails(autoCdcDetails).contains(" trackexc "),
+      )
+    },
+
+    test("an SCD2 flow round-trips, track-history lists and all") {
+      val scd2 = autoCdcDetails.copy(
+        scdType = ScdType.Scd2,
+        trackHistoryColumnList = List(Ex.Col("name"), Ex.Col("tier")),
+      )
+      val excepted = autoCdcDetails.copy(
+        scdType = ScdType.Scd2,
+        trackHistoryExceptColumnList = List(Ex.Col("audit_ts")),
+      )
+      val bare = autoCdcDetails.copy(scdType = ScdType.Scd2)
+      assertTrue(
+        FlowCodec.renderDetails(scd2).contains(" scd2 "),
+        FlowCodec.parseDetails(FlowCodec.renderDetails(scd2)) == Right(scd2),
+        FlowCodec.parseDetails(FlowCodec.renderDetails(excepted)) == Right(excepted),
+        // no track-history list at all is the common SCD2 shape ("track every
+        // eligible column"), and it must not render an empty group
+        FlowCodec.parseDetails(FlowCodec.renderDetails(bare)) == Right(bare),
+        !FlowCodec.renderDetails(bare).contains("track"),
+      )
+    },
+
+    test("an SCD2 manifest stays at sdp-manifest/3 and round-trips") {
+      val scd2Flow = autoCdcFlow.copy(details =
+        autoCdcDetails.copy(scdType = ScdType.Scd2, trackHistoryColumnList = List(Ex.Col("name")))
+      )
+      val m = manifestOf(scd2Flow)
+      assertTrue(
+        m.formatVersion == 3, // SCD2 is expressible in v3 — no new format
+        PipelineManifest.parse(m.render) == Right(m),
+      )
+    },
+
+    test("an unknown scd tag is a Left, not a throw (version skew names itself)") {
+      val skewed = FlowCodec
+        .renderDetails(FlowDetails.AutoCdc("src", List(Ex.Col("k")), Ex.Col("s")))
+        .replace(" scd1 ", " scd3 ")
+      assertTrue(FlowCodec.parseDetails(skewed) == Left("unknown scd type: scd3"))
+    },
+
     test("Flow.reads of an AUTO CDC flow is exactly its source") {
       assertTrue(Flow.reads(autoCdcFlow) == Set("bronze.cdc"))
     },

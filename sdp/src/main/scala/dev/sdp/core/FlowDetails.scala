@@ -35,7 +35,13 @@ enum FlowDetails:
     * @param exceptColumnList exclude columns (field 9)
     * @param ignoreNullUpdatesColumnList       (field 14)
     * @param ignoreNullUpdatesExceptColumnList (field 15)
-    * @param scdType    SCD strategy (field 10); only SCD_TYPE_1 exists so far
+    * @param scdType    SCD strategy (field 10)
+    * @param trackHistoryColumnList       SCD2 only: columns whose value change
+    *                                     opens a new history record (field 11);
+    *                                     empty = track every selected column
+    * @param trackHistoryExceptColumnList SCD2 only: columns excluded from
+    *                                     history tracking (field 12); mutually
+    *                                     exclusive with the list above
     */
   case AutoCdc(
       source: String,
@@ -48,10 +54,19 @@ enum FlowDetails:
       ignoreNullUpdatesColumnList: List[Ex] = Nil,
       ignoreNullUpdatesExceptColumnList: List[Ex] = Nil,
       scdType: ScdType = ScdType.Scd1,
+      trackHistoryColumnList: List[Ex] = Nil,
+      trackHistoryExceptColumnList: List[Ex] = Nil,
   )
 
-/** Slowly-changing-dimension strategy. The proto's `SCDType` enum has only
-  * `SCD_TYPE_1 = 1` so far (`SCD_TYPE_UNSPECIFIED = 0` is the absent default);
-  * we model the one real value. */
+/** Slowly-changing-dimension strategy — the proto's `SCDType` enum
+  * (`SCD_TYPE_UNSPECIFIED = 0` is the absent default, which the server reads as
+  * SCD1, so we always say which one we mean).
+  *
+  * `Scd2` is authored and validated offline today but **cannot go on the wire
+  * yet**: `SCD_TYPE_2 = 2` and the two `track_history_*` lists are master-only
+  * (SPARK-58247, absent from the published 4.2.0 proto). The encoder detects
+  * their presence by descriptor and refuses until the pin carries them — see
+  * `dev.sdp.connect.Scd2Wire`. */
 enum ScdType:
   case Scd1
+  case Scd2

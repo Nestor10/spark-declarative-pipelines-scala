@@ -9,11 +9,14 @@ import org.apache.spark.connect.proto as sc
   * trace ([[PipelinesRegistration.RegistrationError.UnsupportedWire]] carries
   * it into the typed channel).
   *
-  * AUTO CDC used to live here; since roadmap S1 it is encoded unconditionally
-  * and *server* version safety is [[VersionGate]]'s job. What remains is the
-  * genuinely unrepresentable: a subquery inside a standalone expression
-  * ([[AlgebraProtoEncoder.expression]]). Roadmap S2 (SCD2, gated on a 4.3
-  * proto) is the next construct expected to use this. */
+  * AUTO CDC used to live here; since roadmap S1 its SCD1 half is encoded
+  * unconditionally and *server* version safety is [[VersionGate]]'s job. Two
+  * constructs use this today:
+  *   - a subquery inside a standalone expression, which is genuinely
+  *     unrepresentable ([[AlgebraProtoEncoder.expression]]);
+  *   - **AUTO CDC stored as SCD type 2** (roadmap S2), which the pinned proto
+  *     cannot express — see [[Scd2Wire]], which decides by descriptor, so the
+  *     refusal disappears on its own when the dependency carries the fields. */
 final class UnsupportedWireFeature(message: String) extends RuntimeException(message)
 
 /** Pure translation from the canonical [[PipelineManifest]] to the Spark
@@ -271,8 +274,14 @@ object PipelineProtoEncoder:
     *     `asUnqualifiedColumnName` and fails `AUTOCDC_NON_COLUMN_IDENTIFIER`
     *     otherwise. `sequence_by` and the conditions are ordinary expressions.
     *
-    * SCD2 (`SCD_TYPE_2` + the track-history lists) is deliberately absent:
-    * those fields do not exist in the 4.2.0 proto (roadmap S2, gated on 4.3).
+    * **SCD2** (`SCD_TYPE_2` + the track-history lists 11/12) is staged but
+    * GATED — roadmap S2. The pinned 4.2.0 proto has none of those fields, so an
+    * SCD2 flow is refused here with [[UnsupportedWireFeature]] (a sentence
+    * naming the pin it needs), never half-encoded: proto3 would otherwise send
+    * `SCD_TYPE_UNSPECIFIED` — which the server reads as SCD *1* — and silently
+    * drop the history-tracking lists, i.e. materialize the wrong table shape.
+    * The condition is a descriptor lookup ([[Scd2Wire]]), so the encode turns
+    * itself on when the artifact carries the fields.
     */
   private def autoCdcFlowCommand(graphId: String, flow: dev.sdp.core.Flow): sc.PipelineCommand =
     val cdc = flow.details match
@@ -281,6 +290,19 @@ object PipelineProtoEncoder:
         throw new IllegalStateException(s"autoCdcFlowCommand called with $other")
 
     val ex = AlgebraProtoEncoder.expression(_)
+
+    // GATE(spark-4.3) — refuse BEFORE building anything, so a gated pipeline
+    // cannot leave a half-formed command behind. The trigger is the SCD2
+    // construct in any of its spellings: the type itself, or a track-history
+    // list (which the validator only lets through under SCD2, but a manifest
+    // can also arrive from a file).
+    val usesScd2 =
+      cdc.scdType == dev.sdp.core.ScdType.Scd2 ||
+        cdc.trackHistoryColumnList.nonEmpty ||
+        cdc.trackHistoryExceptColumnList.nonEmpty
+    if usesScd2 && !Scd2Wire.available then
+      throw Scd2Wire.unsupported(flow.name, flow.target)
+
     val ac = sc.PipelineCommand.DefineFlow.AutoCdcFlowDetails.newBuilder()
     ac.setSource(cdc.source)                                                  // 1
     cdc.keys.foreach(k => ac.addKeys(ex(k)))                                  // 2
@@ -292,6 +314,14 @@ object PipelineProtoEncoder:
     cdc.scdType match                                                         // 10
       case dev.sdp.core.ScdType.Scd1 =>
         ac.setStoredAsScdType(sc.PipelineCommand.DefineFlow.SCDType.SCD_TYPE_1)
+      case dev.sdp.core.ScdType.Scd2 =>
+        // 10 = SCD_TYPE_2, plus fields 11/12 — all three by descriptor, since
+        // the pinned artifact has no symbol for any of them (see Scd2Wire).
+        Scd2Wire.encode(
+          ac,
+          cdc.trackHistoryColumnList.map(ex),
+          cdc.trackHistoryExceptColumnList.map(ex),
+        )
     cdc.ignoreNullUpdatesColumnList.foreach(e => ac.addIgnoreNullUpdatesColumnList(ex(e)))             // 14
     cdc.ignoreNullUpdatesExceptColumnList.foreach(e => ac.addIgnoreNullUpdatesExceptColumnList(ex(e))) // 15
 

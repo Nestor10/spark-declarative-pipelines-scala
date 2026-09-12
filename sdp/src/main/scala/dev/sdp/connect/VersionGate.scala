@@ -69,13 +69,26 @@ object VersionGate:
     * **This enum is the single requirements map** — construct → minimum server
     * version — so a new gated construct is one `case` here plus one line in
     * [[constructsOf]], and nothing else in the codebase has an opinion about
-    * versions. (Roadmap S2 adds `AutoCdcScd2 extends Construct(..., 4.3)`; the
-    * `scdType` match in [[constructsOf]] stops compiling until it does, which is
+    * versions. (The `scdType` match in [[constructsOf]] is exhaustive, so a new
+    * SCD type cannot be added to the core ADT without landing here, which is
     * the point.)
+    *
+    * Note the division of labour with [[Scd2Wire]]: this map is about the
+    * *server*, that gate is about the *artifact we compile against*. Both must
+    * pass, and an SCD2 pipeline currently fails the second one first (no
+    * released proto carries SCD2 yet).
     */
   enum Construct(val label: String, val minimumVersion: ServerVersion):
     case AutoCdcScd1
         extends Construct("AUTO CDC flow (SCD type 1)", ServerVersion(4, 2))
+
+    /** SCD type 2 is master-only upstream (SPARK-58247, no release tag contains
+      * it as of 2026-09-12): the proto fields land in a Spark **4.3**, and the
+      * engine-side `Scd2BatchProcessor` with them. 4.3 is therefore the
+      * earliest server that can honor it; if upstream backports into a 4.2.x,
+      * this number is the one line to change. */
+    case AutoCdcScd2
+        extends Construct("AUTO CDC flow (SCD type 2)", ServerVersion(4, 3))
 
   /** One *use* of a gated construct: which flow, writing which target. Named so
     * the error can point at the author's own flow rather than a category. */
@@ -94,6 +107,7 @@ object VersionGate:
         case cdc: FlowDetails.AutoCdc =>
           val construct = cdc.scdType match
             case ScdType.Scd1 => Construct.AutoCdcScd1
+            case ScdType.Scd2 => Construct.AutoCdcScd2
           Some(Usage(construct, flow.name, flow.target))
     }
 

@@ -48,6 +48,24 @@ object VersionGateSpec extends ZIOSpecDefault:
       ),
     )
 
+  /** An SCD2 AUTO CDC pipeline — gated one minor higher (roadmap S2). */
+  private def scd2Manifest(flowName: String = "dim_auto_cdc"): PipelineManifest =
+    PipelineManifest.fromGraphAndFlows(
+      PipelineGraph(Map("dim" -> PipelineNode.StreamingTable("dim", "delta")), Set.empty),
+      List(
+        Flow(
+          flowName,
+          "dim",
+          FlowDetails.AutoCdc(
+            "bronze.cdc",
+            List(Ex.Col("id")),
+            Ex.Col("seq"),
+            scdType = ScdType.Scd2,
+          ),
+        )
+      ),
+    )
+
   /** Two AUTO CDC flows: the message must name BOTH, so one run fixes both. */
   private val twoCdcManifest: PipelineManifest =
     PipelineManifest.fromGraphAndFlows(
@@ -111,10 +129,18 @@ object VersionGateSpec extends ZIOSpecDefault:
       test("every gated construct names itself in prose (the error is read by humans)") {
         assertTrue(Construct.values.forall(c => c.label.nonEmpty && c.label.exists(_.isLetter)))
       },
+      test("AUTO CDC (SCD type 2) requires Spark 4.3 — one minor higher than SCD1") {
+        assertTrue(
+          Construct.AutoCdcScd2.minimumVersion == ServerVersion(4, 3),
+          // the two SCD types are separate constructs, not one relaxed rule
+          Construct.AutoCdcScd1.minimumVersion != Construct.AutoCdcScd2.minimumVersion,
+        )
+      },
       test("only AUTO CDC flows are gated — a WriteRelation pipeline uses nothing") {
         assertTrue(
           VersionGate.constructsOf(plainManifest).isEmpty,
           VersionGate.constructsOf(cdcManifest()).map(_.construct) == List(Construct.AutoCdcScd1),
+          VersionGate.constructsOf(scd2Manifest()).map(_.construct) == List(Construct.AutoCdcScd2),
         )
       },
     ),
@@ -135,6 +161,27 @@ object VersionGateSpec extends ZIOSpecDefault:
         assertTrue(
           List("4.1.1", "4.1.2", "4.0.0", "3.5.1")
             .forall(v => VersionGate.check(v, cdcManifest(), endpoint).isLeft)
+        )
+      },
+      test("SCD2 is refused on 4.2 — the server that runs SCD1 happily (S2)") {
+        assertTrue(
+          List("4.2.0", "4.2.3", "4.1.1").forall(v =>
+            VersionGate.check(v, scd2Manifest(), endpoint).isLeft
+          ),
+          List("4.3.0", "4.3.0-SNAPSHOT", "5.0.0").forall(v =>
+            VersionGate.check(v, scd2Manifest(), endpoint).isRight
+          ),
+        )
+      },
+      test("the SCD2 refusal names SCD type 2 specifically, not AUTO CDC in general") {
+        val detail = VersionGate.check("4.2.0", scd2Manifest("customers_cdc"), endpoint) match
+          case Left(RegistrationError.ServerTooOld(d)) => d
+          case other                                   => s"UNEXPECTED: $other"
+        assertTrue(
+          detail.contains("AUTO CDC flow (SCD type 2)"),
+          detail.contains("customers_cdc"),
+          detail.contains("Spark 4.3+ server"),
+          detail.contains("reports 4.2.0"),
         )
       },
     ),

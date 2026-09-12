@@ -157,6 +157,16 @@ enum PipelineValidationError:
   /** AUTO CDC flow declared with no `keys` (row identity is mandatory). */
   case AutoCdcKeysEmpty(flowName: String)
 
+  /** AUTO CDC flow carrying a history-tracking column list while stored as SCD
+    * type 1 — the lists only mean anything to the SCD2 processor. Mirrors the
+    * server's `AUTOCDC_TRACK_HISTORY_REQUIRES_SCD2`. */
+  case AutoCdcTrackHistoryRequiresScd2(flowName: String)
+
+  /** AUTO CDC flow declaring BOTH history-tracking lists — an include/exclude
+    * pair, mutually exclusive like `columnList`/`exceptColumnList`. Mirrors the
+    * server's `AUTOCDC_BOTH_TRACK_HISTORY_COLUMN_LIST_AND_EXCEPT_COLUMN_LIST`. */
+  case AutoCdcBothTrackHistoryLists(flowName: String)
+
   /** Human-readable, single-line description for build logs. */
   def describe: String = this match
     case CycleDetected(path) =>
@@ -177,3 +187,9 @@ enum PipelineValidationError:
         s"create the target with createStreamingTable(\"$target\") (apply_changes MERGEs into a streaming table)"
     case AutoCdcKeysEmpty(flowName) =>
       s"AUTO CDC flow '$flowName' declares no keys — at least one key column is required to identify rows"
+    case AutoCdcTrackHistoryRequiresScd2(flowName) =>
+      s"AUTO CDC flow '$flowName' declares history-tracking columns but is stored as SCD type 1 — " +
+        s"trackHistoryColumnList/trackHistoryExceptColumnList need storedAsScdType = 2"
+    case AutoCdcBothTrackHistoryLists(flowName) =>
+      s"AUTO CDC flow '$flowName' declares both trackHistoryColumnList and trackHistoryExceptColumnList — " +
+        s"they are mutually exclusive (list the columns to track, or the ones to skip, not both)"

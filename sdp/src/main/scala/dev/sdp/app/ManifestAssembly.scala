@@ -91,7 +91,12 @@ object ManifestAssembly:
     /** AUTO CDC structural rules, accumulated (not short-circuiting):
       *   - the target must be a declared **streaming TABLE** dataset (the CDC
       *     flow MERGEs into it; the server requires a streaming table shell);
-      *   - `keys` must be non-empty (row identity is mandatory).
+      *   - `keys` must be non-empty (row identity is mandatory);
+      *   - the SCD2 history-tracking lists are mutually exclusive, and mean
+      *     nothing outside SCD2 — both refusals mirror the server's own
+      *     (`AUTOCDC_BOTH_TRACK_HISTORY_COLUMN_LIST_AND_EXCEPT_COLUMN_LIST`,
+      *     `AUTOCDC_TRACK_HISTORY_REQUIRES_SCD2`), caught offline so the author
+      *     never spends a round trip on them.
       * The missing-`source` case is intentionally *not* here — it falls out of
       * the generic dangling-read detection via the derived `source -> target`
       * edge. */
@@ -115,7 +120,22 @@ object ManifestAssembly:
               Nil
           val keyErr =
             if cdc.keys.isEmpty then List(PipelineValidationError.AutoCdcKeysEmpty(f.name)) else Nil
-          targetErr ++ keyErr
+          // An EMPTY list is "track everything eligible" (exactly the wire's
+          // meaning of an unset repeated field), so both rules gate on
+          // non-emptiness, never on "was it specified".
+          val tracked = cdc.trackHistoryColumnList.nonEmpty
+          val trackedExcept = cdc.trackHistoryExceptColumnList.nonEmpty
+          val bothErr =
+            if tracked && trackedExcept then
+              List(PipelineValidationError.AutoCdcBothTrackHistoryLists(f.name))
+            else Nil
+          val scdErr = cdc.scdType match
+            case dev.sdp.core.ScdType.Scd2 => Nil
+            case dev.sdp.core.ScdType.Scd1 =>
+              if tracked || trackedExcept then
+                List(PipelineValidationError.AutoCdcTrackHistoryRequiresScd2(f.name))
+              else Nil
+          targetErr ++ keyErr ++ bothErr ++ scdErr
         }
 
     /** Propagate dataset shapes through the validated graph and collect

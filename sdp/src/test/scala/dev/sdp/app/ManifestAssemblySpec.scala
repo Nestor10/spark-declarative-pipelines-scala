@@ -149,6 +149,99 @@ object ManifestAssemblySpec extends ZIOSpecDefault:
         })
       )
     },
+    test("SCD2 history-tracking columns are refused on an SCD1 flow (S2)") {
+      import dev.sdp.core.algebra.*
+      // Mirrors the server's AUTOCDC_TRACK_HISTORY_REQUIRES_SCD2 — caught
+      // offline, so the author never spends a round trip on it.
+      val fragment = GraphFragment(
+        List(tbl("src"), PipelineNode.StreamingTable("dim", "delta")),
+        Set.empty,
+        List(Flow(
+          "dim_auto_cdc", "dim",
+          FlowDetails.AutoCdc(
+            "src",
+            List(Ex.Col("id")),
+            Ex.Col("seq"),
+            trackHistoryColumnList = List(Ex.Col("name")),
+          ),
+        )),
+      )
+      for exit <- ManifestAssembly.assemble(List(fragment)).exit
+      yield assertTrue(
+        exit.causeOption.flatMap(_.failureOption).exists(_.exists {
+          case AutoCdcTrackHistoryRequiresScd2("dim_auto_cdc") => true
+          case _                                               => false
+        })
+      )
+    },
+    test("the two SCD2 history-tracking lists are mutually exclusive (S2)") {
+      import dev.sdp.core.algebra.*
+      val fragment = GraphFragment(
+        List(tbl("src"), PipelineNode.StreamingTable("dim", "delta")),
+        Set.empty,
+        List(Flow(
+          "dim_auto_cdc", "dim",
+          FlowDetails.AutoCdc(
+            "src",
+            List(Ex.Col("id")),
+            Ex.Col("seq"),
+            scdType = ScdType.Scd2,
+            trackHistoryColumnList = List(Ex.Col("name")),
+            trackHistoryExceptColumnList = List(Ex.Col("audit")),
+          ),
+        )),
+      )
+      for exit <- ManifestAssembly.assemble(List(fragment)).exit
+      yield assertTrue(
+        exit.causeOption.flatMap(_.failureOption).exists(_.exists {
+          case AutoCdcBothTrackHistoryLists("dim_auto_cdc") => true
+          case _                                            => false
+        })
+      )
+    },
+    test("a well-formed SCD2 flow validates fully OFFLINE (the wire gate is elsewhere)") {
+      import dev.sdp.core.algebra.*
+      // The S2 promise: authoring and validation are complete today; only
+      // run/dry-run refuses (PipelineProtoEncoderSpec asserts that half).
+      val fragment = GraphFragment(
+        List(
+          PipelineNode.ExternalTable("bronze.cdc"),
+          PipelineNode.StreamingTable("dim", "delta"),
+        ),
+        Set.empty,
+        List(Flow(
+          "dim_auto_cdc", "dim",
+          FlowDetails.AutoCdc(
+            "bronze.cdc",
+            List(Ex.Col("id")),
+            Ex.Col("seq"),
+            scdType = ScdType.Scd2,
+            trackHistoryExceptColumnList = List(Ex.Col("audit_ts")),
+          ),
+        )),
+      )
+      for manifest <- ManifestAssembly.assemble(List(fragment))
+      yield assertTrue(
+        manifest.formatVersion == 3, // SCD2 needs no new manifest format
+        manifest.edges == List(DependencyEdge("bronze.cdc", "dim")),
+        PipelineManifest.parse(manifest.render) == Right(manifest),
+      )
+    },
+    test("an empty history-tracking list on an SCD1 flow is a no-op, not an error") {
+      import dev.sdp.core.algebra.*
+      // Empty means "track everything eligible" (the wire's own meaning of an
+      // unset repeated field), so it must not trip the SCD2-only rule.
+      val fragment = GraphFragment(
+        List(tbl("src"), PipelineNode.StreamingTable("dim", "delta")),
+        Set.empty,
+        List(Flow(
+          "dim_auto_cdc", "dim",
+          FlowDetails.AutoCdc("src", List(Ex.Col("id")), Ex.Col("seq"), trackHistoryColumnList = Nil),
+        )),
+      )
+      for manifest <- ManifestAssembly.assemble(List(fragment))
+      yield assertTrue(manifest.flows.map(_.name) == List("dim_auto_cdc"))
+    },
     test("AUTO CDC with a missing source is caught by the dangling-read rule") {
       import dev.sdp.core.algebra.*
       val fragment = GraphFragment(

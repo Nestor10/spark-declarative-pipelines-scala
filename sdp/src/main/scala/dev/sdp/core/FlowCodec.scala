@@ -18,10 +18,18 @@ import dev.sdp.core.algebra.{Ex, RelCodec}
   *                    (seq <enc(ex)>) (del 0|1 <enc(ex)>?) (trunc 0|1 <enc(ex)>?)
   *                    (cols <n> <enc(ex)>*) (except <n> <enc(ex)>*)
   *                    (ignidx <n> <enc(ex)>*) (ignexc <n> <enc(ex)>*)
-  * scd     := scd1
+  *                    [track <n> <enc(ex)>*] [trackexc <n> <enc(ex)>*]
+  * scd     := scd1 | scd2
   * }}}
   * The leading tag (`wr` / `autocdc`) discriminates the two shapes. Round-trips:
   * `parse(render(d)) == Right(d)` for every `d`.
+  *
+  * The two bracketed SCD2 groups (roadmap S2) are **optional and emitted only
+  * when non-empty**, and they are the LAST groups in the stream. That is what
+  * keeps format v3 at v3: every AUTO CDC flow that existed before SCD2 renders
+  * byte-identically (an empty track-history list is spelled by absence, exactly
+  * as the wire spells it), so the manifest header, the cache hashes and the
+  * fragment strings do not churn for pipelines that do not use SCD2.
   */
 private[core] object FlowCodec:
 
@@ -46,11 +54,21 @@ private[core] object FlowCodec:
       appendExList(sb, "except", cdc.exceptColumnList)
       appendExList(sb, "ignidx", cdc.ignoreNullUpdatesColumnList)
       appendExList(sb, "ignexc", cdc.ignoreNullUpdatesExceptColumnList)
+      // Optional trailing groups — absent when empty, so pre-SCD2 renders are
+      // untouched (see the grammar note above).
+      appendExListIfAny(sb, "track", cdc.trackHistoryColumnList)
+      appendExListIfAny(sb, "trackexc", cdc.trackHistoryExceptColumnList)
       sb.toString
 
   private def appendExList(sb: StringBuilder, tag: String, exprs: List[Ex]): Unit =
     sb.append(' ').append(tag).append(' ').append(exprs.size)
     exprs.foreach(e => sb.append(' ').append(encExNode(e)))
+
+  /** An expression group that is simply absent when empty — the spelling the
+    * optional (SCD2) groups use, so that adding them cost no bytes to any
+    * manifest that does not use them. */
+  private def appendExListIfAny(sb: StringBuilder, tag: String, exprs: List[Ex]): Unit =
+    if exprs.nonEmpty then appendExList(sb, tag, exprs)
 
   private def appendOpt(sb: StringBuilder, tag: String, opt: Option[Ex]): Unit =
     opt match
@@ -99,7 +117,11 @@ private[core] object FlowCodec:
       (ignIdx, r8) = i0
       x0      <- expectExList("ignexc", r8)
       (ignExc, r9) = x0
-      _       <- if r9.isEmpty then Right(()) else Left(s"autocdc: trailing tokens: ${r9.take(3).mkString(" ")}")
+      h0      <- optionalExList("track", r9)
+      (track, r10) = h0
+      h1      <- optionalExList("trackexc", r10)
+      (trackExc, r11) = h1
+      _       <- if r11.isEmpty then Right(()) else Left(s"autocdc: trailing tokens: ${r11.take(3).mkString(" ")}")
     yield FlowDetails.AutoCdc(
       source = source,
       keys = keys,
@@ -111,6 +133,8 @@ private[core] object FlowCodec:
       ignoreNullUpdatesColumnList = ignIdx,
       ignoreNullUpdatesExceptColumnList = ignExc,
       scdType = scdType,
+      trackHistoryColumnList = track,
+      trackHistoryExceptColumnList = trackExc,
     )
 
   /** Consume `<tag> <n> <atom>*` and decode the n atoms as expressions. */
@@ -124,6 +148,15 @@ private[core] object FlowCodec:
         }
       case Nil => Left(s"autocdc: $tag missing count")
     }
+
+  /** Consume `<tag> <n> <atom>*` **if the group is there at all** — an absent
+    * group is the empty list, not an error. Only the optional (trailing) SCD2
+    * groups use this; every group present since v3 stays mandatory, so a
+    * truncated stream is still a parse error rather than a silent default. */
+  private def optionalExList(tag: String, tokens: List[String]): Either[String, (List[Ex], List[String])] =
+    tokens match
+      case `tag` :: _ => expectExList(tag, tokens)
+      case _          => Right(Nil -> tokens)
 
   /** Consume `<tag> 0` (None) or `<tag> 1 <atom>` (Some). */
   private def expectOpt(tag: String, tokens: List[String]): Either[String, (Option[Ex], List[String])] =
@@ -142,10 +175,12 @@ private[core] object FlowCodec:
 
   private def parseScd(tag: String): Either[String, ScdType] = tag match
     case "scd1" => Right(ScdType.Scd1)
+    case "scd2" => Right(ScdType.Scd2)
     case other  => Left(s"unknown scd type: $other")
 
   private def scdTag(scd: ScdType): String = scd match
     case ScdType.Scd1 => "scd1"
+    case ScdType.Scd2 => "scd2"
 
   private def traverse[A](items: List[String])(f: String => Either[String, A]): Either[String, List[A]] =
     items.foldRight[Either[String, List[A]]](Right(Nil)) { (item, acc) =>

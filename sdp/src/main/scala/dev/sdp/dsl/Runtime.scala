@@ -141,8 +141,18 @@ def createStreamingTable(name: String): GraphFragment =
   * an older server before anything is registered, because proto3 would silently
   * strip the branch (see `docs/dsl.md`).
   *
-  * @param storedAsScdType only `1` (SCD type 1) is supported, matching the
-  *                        proto's single `SCD_TYPE_1`.
+  * @param storedAsScdType `1` (overwrite in place) or `2` (keep history).
+  *                        **SCD type 2 authors and validates today but cannot
+  *                        RUN yet**: `SCD_TYPE_2` and the track-history lists
+  *                        are absent from the published 4.2.0 proto, so
+  *                        `sdpRun`/`sdpDryRun` refuse it with a sentence naming
+  *                        the pin it needs (roadmap S2 / `Scd2Wire`).
+  * @param trackHistoryColumnList       SCD2 only: columns whose value change
+  *                                     opens a new history record. Empty =
+  *                                     track every selected column.
+  * @param trackHistoryExceptColumnList SCD2 only: columns excluded from history
+  *                                     tracking; mutually exclusive with
+  *                                     `trackHistoryColumnList`.
   * @param name            flow name; defaults to `s"${target}_auto_cdc"`.
   */
 def createAutoCdcFlow(
@@ -157,10 +167,23 @@ def createAutoCdcFlow(
     ignoreNullUpdatesColumnList: Seq[Column] = Nil,
     ignoreNullUpdatesExceptColumnList: Seq[Column] = Nil,
     storedAsScdType: Int = 1,
+    trackHistoryColumnList: Seq[Column] = Nil,
+    trackHistoryExceptColumnList: Seq[Column] = Nil,
     name: Option[String] = None,
     once: Boolean = false,
 ): GraphFragment =
-  require(storedAsScdType == 1, s"AUTO CDC: only SCD type 1 is supported (got $storedAsScdType)")
+  // The SCD type is the one AUTO CDC parameter that is not representable as
+  // data: `ScdType` has exactly the two cases the proto has, so an out-of-range
+  // Int can only be refused HERE, at the boundary where the Int still exists.
+  // Everything downstream (validation, manifest, encoder) is total by
+  // construction.
+  val scdType = storedAsScdType match
+    case 1 => ScdType.Scd1
+    case 2 => ScdType.Scd2
+    case other =>
+      throw new IllegalArgumentException(
+        s"AUTO CDC: storedAsScdType must be 1 or 2 (got $other)"
+      )
   val flowName = name.getOrElse(s"${target}_auto_cdc")
   GraphFragment(
     Nil,
@@ -179,7 +202,9 @@ def createAutoCdcFlow(
           exceptColumnList = exceptColumnList.map(_.ex).toList,
           ignoreNullUpdatesColumnList = ignoreNullUpdatesColumnList.map(_.ex).toList,
           ignoreNullUpdatesExceptColumnList = ignoreNullUpdatesExceptColumnList.map(_.ex).toList,
-          scdType = ScdType.Scd1,
+          scdType = scdType,
+          trackHistoryColumnList = trackHistoryColumnList.map(_.ex).toList,
+          trackHistoryExceptColumnList = trackHistoryExceptColumnList.map(_.ex).toList,
         ),
         once = once,
       )

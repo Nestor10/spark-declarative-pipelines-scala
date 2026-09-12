@@ -296,6 +296,69 @@ object PipelineProtoEncoderSpec extends ZIOSpecDefault:
         catch { case e: UnsupportedWireFeature => Some(e.getMessage) }
       assertTrue(thrown.exists(_.contains("subquery")))
     },
+    test("SCD2 is refused on the pinned wire — GATE(spark-4.3), by descriptor (S2)") {
+      // The gate asserted from the OUTSIDE: whatever the pinned artifact is,
+      // the encoder and Scd2Wire agree. Today `available` is false (the
+      // committed inventory proves SCD_TYPE_2 and fields 11/12 are absent from
+      // 4.2.0), so this reads as "refused, with a sentence naming the pin".
+      // When the dependency bumps, the same test asserts the encode instead —
+      // nothing here is pinned to a version string.
+      val scd2 = FlowDetails.AutoCdc(
+        "bronze.cdc",
+        List(Ex.Col("id")),
+        Ex.Col("seq"),
+        scdType = ScdType.Scd2,
+        trackHistoryColumnList = List(Ex.Col("name")),
+      )
+      val outcome =
+        try Right(autoCdcDefinitions(scd2))
+        catch { case e: UnsupportedWireFeature => Left(e.getMessage) }
+
+      if Scd2Wire.available then
+        val details = outcome.toOption.get.getAutoCdcFlowDetails
+        val d       = sc.PipelineCommand.DefineFlow.AutoCdcFlowDetails.getDescriptor
+        def repeated(name: String) =
+          details.getField(d.findFieldByName(name)).asInstanceOf[java.util.List[?]].size
+        assertTrue(
+          details.getStoredAsScdTypeValue == 2,         // 10 = SCD_TYPE_2
+          repeated("track_history_column_list") == 1,   // 11
+          repeated("track_history_except_column_list") == 0, // 12
+        )
+      else
+        assertTrue(
+          outcome.isLeft,
+          // the message must be actionable: what, where, and what changes it
+          outcome.swap.exists(_.contains("dim_auto_cdc")),
+          outcome.swap.exists(_.contains("SCD type 2")),
+          outcome.swap.exists(_.contains("track_history_column_list")),
+          outcome.swap.exists(_.contains("spark-connect-common")),
+          // and it must not read as a defect
+          outcome.swap.exists(!_.contains("Exception")),
+        )
+    },
+    test("the SCD2 refusal fires on a track-history list even under SCD1 (defence in depth)") {
+      // The validator refuses this combination offline, but a manifest can also
+      // be parsed from a file; a list we cannot put on the wire must never be
+      // silently dropped — that is the proto3 failure mode the gate exists for.
+      val sneaky = FlowDetails.AutoCdc(
+        "bronze.cdc",
+        List(Ex.Col("id")),
+        Ex.Col("seq"),
+        trackHistoryExceptColumnList = List(Ex.Col("audit")),
+      )
+      val refused =
+        try { val _ = autoCdcDefinitions(sneaky); None }
+        catch { case e: UnsupportedWireFeature => Some(e.getMessage) }
+      assertTrue(Scd2Wire.available || refused.isDefined)
+    },
+    test("an ordinary SCD1 flow is untouched by the SCD2 gate") {
+      // Nothing about staging SCD2 may cost the shipped path anything.
+      assertTrue(
+        autoCdcFlow.getAutoCdcFlowDetails.getStoredAsScdType ==
+          sc.PipelineCommand.DefineFlow.SCDType.SCD_TYPE_1,
+        autoCdcFlow.getAutoCdcFlowDetails.getStoredAsScdTypeValue == 1,
+      )
+    },
     test("a once=true WriteRelation flow encodes DefineFlow.once on the wire") {
 
       val onceManifest = PipelineManifest.fromGraphAndFlows(

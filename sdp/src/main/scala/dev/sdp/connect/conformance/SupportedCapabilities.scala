@@ -107,10 +107,8 @@ object SupportedCapabilities:
   )
 
   /** Every field of `AutoCdcFlowDetails` in the pinned 4.2.0 proto — the whole
-    * SCD1-era message, all of it emitted. SCD2's `track_history_*` (11/12) and
-    * `SCD_TYPE_2` are master-only and do not appear in the inventory yet, so
-    * there is nothing to claim or to omit (roadmap S2). */
-  val autoCdcFields: Set[String] = Set(
+    * SCD1-era message, all of it emitted. */
+  private val autoCdcScd1Fields: Set[String] = Set(
     "source",
     "keys",
     "sequence_by",
@@ -122,6 +120,22 @@ object SupportedCapabilities:
     "ignore_null_updates_column_list",
     "ignore_null_updates_except_column_list",
   )
+
+  /** SCD2's history-tracking lists (11/12), claimed **iff the pinned artifact
+    * has them** — which is exactly when the encoder emits them (roadmap S2:
+    * `Scd2Wire` gates the encode on the same descriptor lookup).
+    *
+    * Deliberately conditional rather than aspirational: a claim is verified
+    * against the drift-gated inventory, so hardcoding these would fail the
+    * conformance suite today AND would lie about what goes on the wire. Written
+    * this way, the bump that brings SCD2 turns the report line into
+    * `12 / 12 (whole message)` and the claims follow, with no edit here. */
+  private val autoCdcScd2Fields: Set[String] =
+    if dev.sdp.connect.Scd2Wire.available then
+      Set("track_history_column_list", "track_history_except_column_list")
+    else Set.empty
+
+  val autoCdcFields: Set[String] = autoCdcScd1Fields ++ autoCdcScd2Fields
 
   /** Fully qualified capability claims, for inventory verification. */
   val claims: Set[String] =
