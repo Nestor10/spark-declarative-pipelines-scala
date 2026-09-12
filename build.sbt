@@ -144,10 +144,41 @@ lazy val sdp = (project in file("sdp"))
       "dev.zio"       %% "zio-test-sbt" % zioVersion % Test,
     ),
     testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
-    // Forked tests: the container-backed integration specs (AlgebraOracleSpec,
-    // FunctionLibrarySpec, PipelinesRegistrationIntegrationSpec) want a clean
-    // JVM and the real classpath via java.class.path. The SDP_INTEGRATION gate
-    // keeps them off CI without a container engine.
+    // Forked tests: a clean JVM and the real classpath via java.class.path.
+    // (The container-backed suites moved to `sdpIt` — S1.5, 2026-09-12 — so
+    // this module's suite is structurally offline.)
+    Test / fork := true,
+  )
+
+// ---------------------------------------------------------------------
+// sdp-it — the integration / e2e suite. TEST-ONLY, never published.
+//
+//   Everything here needs a live Spark Connect server (started as a
+//   container through the podman/docker CLI — D3 unchanged: still no
+//   Testcontainers), so it is slow and environment-dependent, and it stays
+//   out of `sdp/testFull`. sbt itself deprecated the `IntegrationTest`
+//   configuration in favour of exactly this shape: a separate subproject.
+//
+//   `test->test` on `sdp` so the offline fixtures/helpers stay where the
+//   offline suites also use them — nothing is duplicated.
+//
+//   D11 is not violated: D11's boundary is DISTRIBUTION, and this module
+//   publishes nothing.
+// ---------------------------------------------------------------------
+lazy val sdpIt = (project in file("sdp-it"))
+  .dependsOn(sdp % "compile->compile;test->test")
+  .settings(
+    name           := "sdp-it",
+    publish / skip := true,
+    libraryDependencies ++= Seq(
+      "dev.zio" %% "zio-test"     % zioVersion % Test,
+      "dev.zio" %% "zio-test-sbt" % zioVersion % Test,
+    ),
+    testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
+    // Same reason as `sdp`: the container-backed specs want a clean JVM and
+    // the real classpath via java.class.path. The SDP_INTEGRATION env gate
+    // (unchanged, inside each spec) keeps them skipping where no container
+    // engine exists — compilation always succeeds.
     Test / fork := true,
   )
 
@@ -224,7 +255,7 @@ lazy val sbtSparkPipelines = (project in file("sbt-spark-pipelines"))
 // Root aggregate — coordination only, never published.
 // ---------------------------------------------------------------------
 lazy val root = (project in file("."))
-  .aggregate(sdp, sbtSparkPipelines)
+  .aggregate(sdp, sdpIt, sbtSparkPipelines)
   .settings(
     name           := "sbt-spark-pipelines-root",
     publish / skip := true,

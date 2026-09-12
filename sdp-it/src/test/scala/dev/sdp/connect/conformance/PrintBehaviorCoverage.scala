@@ -10,7 +10,7 @@ package dev.sdp.connect.conformance
   * *usage distinction* in an existing message, not a message of its own.
   *
   * {{{
-  * sbt 'sdp/Test/runMain dev.sdp.connect.conformance.PrintBehaviorCoverage'
+  * sbt 'sdpIt/Test/runMain dev.sdp.connect.conformance.PrintBehaviorCoverage'
   * }}}
   *
   * Generated, never hand-maintained as prose: the rows live in

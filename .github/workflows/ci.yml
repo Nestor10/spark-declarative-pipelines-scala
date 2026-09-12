@@ -22,9 +22,15 @@ jobs:
       - name: Setup sbt
         uses: sbt/setup-sbt@v1
 
+      # Aggregated: compiles every module's test sources, `sdpIt` included.
+      # That module's specs are SDP_INTEGRATION-gated, so compiling them here
+      # needs no container engine — only running them would.
       - name: Compile
         run: sbt Test/compile
 
+      # Module-scoped on purpose: `sdp`'s suite is structurally offline since
+      # the container-backed specs moved to `sdpIt` (S1.5). `sdpIt/testFull`
+      # is deliberately NOT run here — it wants podman/docker and minutes.
       - name: Library tests
         run: sbt sdp/testFull
 

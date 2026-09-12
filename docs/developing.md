@@ -10,14 +10,19 @@ them. (For the plugin's *user-facing* tasks — `sdpManifest`, `sdpPush`,
 |---|---|---|
 | `sdp` | `sdp/` | THE library: pure domain (`dev.sdp.core`), ZIO services (`dev.sdp.app`), runtime plan-builder DSL (`dev.sdp.dsl`), Spark Connect client + `SdpApp` (`dev.sdp.connect`) |
 | `sbtSparkPipelines` | `sbt-spark-pipelines/` | The sbt plugin: classload-eval discovery, cached manifest task, run/watch/seed tasks over the library's Connect client |
+| `sdpIt` | `sdp-it/` | Test-only, never published: the live-server integration/e2e suite (container-backed) + the behavioral conformance matrix. `dependsOn(sdp % "compile->compile;test->test")` |
 | `root` | `.` | Aggregate only; never published |
+
+`sdp`'s own suite is **structurally offline** — nothing on its test classpath can start a
+container. Everything that needs a live Spark Connect server lives in `sdpIt`.
 
 ## Everyday commands
 
 ```
 sbt compile                      # all modules
-sbt testFull                     # every zio-test suite, all modules
-sbt sdp/testFull                 # the library (also: sbtSparkPipelines)
+sbt testFull                     # every zio-test suite, all modules (sdpIt's gated specs skip)
+sbt sdp/testFull                 # the library — offline, seconds (also: sbtSparkPipelines)
+sbt sdpIt/testFull               # integration/e2e; gated specs need SDP_INTEGRATION=1 + podman
 ```
 
 **Gotchas (sbt 2.0):**
@@ -43,15 +48,16 @@ Sandboxes live under `sbt-spark-pipelines/src/sbt-test/sdp/*` (`valid-pipeline`,
 `cyclic-pipeline`, `caching`). `scriptedDependencies` publishes all three modules to the local
 ivy repo first, so scripted always tests the *current* code.
 
-## Live-server integration tests (podman/docker required)
+## Live-server integration tests — the `sdpIt` module (podman/docker required)
 
-Gated — they skip unless enabled:
+They live in `sdp-it/src/test` and are gated — they skip unless enabled:
 
 ```
-SDP_INTEGRATION=1 sbt 'sdp/Test/runMain dev.sdp.connect.AlgebraOracleSpec'
-SDP_INTEGRATION=1 sbt 'sdp/Test/runMain dev.sdp.connect.PipelinesRegistrationIntegrationSpec'
-SDP_INTEGRATION=1 sbt 'sdp/Test/runMain dev.sdp.connect.FunctionLibrarySpec'
-SDP_INTEGRATION=1 sbt 'sdp/Test/runMain dev.sdp.connect.AutoCdcE2eSpec'    # 4.2.0 image
+SDP_INTEGRATION=1 sbt sdpIt/testFull                 # the whole suite
+SDP_INTEGRATION=1 sbt 'sdpIt/Test/runMain dev.sdp.connect.AlgebraOracleSpec'
+SDP_INTEGRATION=1 sbt 'sdpIt/Test/runMain dev.sdp.connect.PipelinesRegistrationIntegrationSpec'
+SDP_INTEGRATION=1 sbt 'sdpIt/Test/runMain dev.sdp.connect.FunctionLibrarySpec'
+SDP_INTEGRATION=1 sbt 'sdpIt/Test/runMain dev.sdp.connect.AutoCdcE2eSpec'    # 4.2.0 image
 ```
 
 Each suite starts (and always tears down) a Spark container via the `podman`/`docker` CLI —
@@ -125,7 +131,7 @@ every capability claim names a real wire field. It also prints the coverage repo
 ## The behavioral matrix — the other half of conformance
 
 ```
-sbt 'sdp/Test/runMain dev.sdp.connect.conformance.PrintBehaviorCoverage'
+sbt 'sdpIt/Test/runMain dev.sdp.connect.conformance.PrintBehaviorCoverage'
 ```
 
 The wire matrix above proves *message-shape* coverage. It was at 100% on T0 when the
@@ -134,7 +140,9 @@ it is a usage distinction in an existing one. Every expensive bug in this projec
 has lived in that blind spot: the graph-defaults edge drop, TRUNCATE-on-Delta, provider
 re-assert on re-run, re-run NULL semantics.
 
-So `BehaviorInventory` (test sources) enumerates the *server behaviors* an SDP client depends
+So `BehaviorInventory` (`sdp-it` test sources — it lives beside the specs it cites, because
+its `Covered` guard resolves them reflectively on one classpath) enumerates the *server
+behaviors* an SDP client depends
 on — registration sequence and error surfaces, graph defaults and name resolution, fresh run
 vs re-run materialization, full refresh, `once` flows, AUTO CDC registration and execution,
 external-input resolution, streaming triggers and run termination, event/progress wording,
@@ -143,7 +151,7 @@ a **Spark source anchor** (path → class.method in `../spark`) and an honest st
 `Covered(spec)` / `Uncovered` / `NotApplicable(reason)`.
 
 Rules that keep it a measurement rather than a brochure, enforced by `BehaviorCoverageSpec`
-in normal `testFull`:
+in `sdpIt/testFull` (itself ungated — it needs no container, only the classpath):
 
 - every row cites an anchor (the authority is the Spark source, not our memory);
 - a `Covered` row must name a spec class that **resolves on the test classpath** — a renamed

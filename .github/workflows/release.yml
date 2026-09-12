@@ -32,6 +32,9 @@ jobs:
       - name: Setup sbt
         uses: sbt/setup-sbt@v1
 
+      # Aggregated compile covers the test-only `sdpIt` module too (its specs
+      # are SDP_INTEGRATION-gated, so no container engine is needed to compile
+      # them); the gate job runs the offline `sdp` suite, not `sdpIt`.
       - name: Compile
         run: sbt Test/compile
 
