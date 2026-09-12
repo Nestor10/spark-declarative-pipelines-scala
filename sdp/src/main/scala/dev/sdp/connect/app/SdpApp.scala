@@ -3,6 +3,7 @@ package dev.sdp.connect.app
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Paths}
 
+import dev.sdp.connect.TransportConfig
 import dev.sdp.core.GraphFragment
 import zio.*
 
@@ -39,6 +40,14 @@ import zio.*
   *                             switch: unqualified dataset names land here
   *                             (`dev_eric` locally, the real schema in prod).
   *                             Unset = omit. `run` only.
+  *   - `SDP_CONNECT_USE_TLS`   `true` to speak TLS instead of plaintext
+  *                             (default plaintext — the local dev container).
+  *   - `SDP_CONNECT_TOKEN`     bearer token attached to every call. A secret:
+  *                             never logged, and redacted in `toString`.
+  *   - `SDP_CONNECT_DEADLINE`  per-RPC deadline (seconds) for the registration
+  *                             calls; the run stream is bounded instead by
+  *                             `SDP_RUN_TIMEOUT`.
+  *   - `SDP_RUN_TIMEOUT`       seconds to wait for a run before detaching.
   *
   * `validate` and `manifest` are offline and run with NO env vars set.
   */
@@ -69,6 +78,14 @@ trait SdpApp extends ZIOAppDefault:
   // validate/manifest are offline and never read them.
   private val DefaultCatalogVar  = "SDP_DEFAULT_CATALOG"
   private val DefaultDatabaseVar = "SDP_DEFAULT_DATABASE"
+  // Transport: TLS + bearer token for a managed endpoint. Unset = plaintext,
+  // anonymous — sc://localhost is the dev container and stays untouched. The
+  // token is a secret: it is never logged, and `TransportConfig.toString`
+  // redacts it so it cannot leak through config echoing.
+  private val UseTlsVar   = "SDP_CONNECT_USE_TLS"
+  private val TokenVar    = "SDP_CONNECT_TOKEN"
+  private val DeadlineVar = "SDP_CONNECT_DEADLINE"
+  private val RunTimeoutVar = "SDP_RUN_TIMEOUT"
 
   private val DefaultEndpoint = "sc://localhost:15002"
 
@@ -89,7 +106,28 @@ trait SdpApp extends ZIOAppDefault:
       storage = storageOpt.filter(_.nonEmpty).getOrElse(s"file:///tmp/sdp/$nm")
       defaultCatalog  <- env(DefaultCatalogVar).map(_.filter(_.nonEmpty))
       defaultDatabase <- env(DefaultDatabaseVar).map(_.filter(_.nonEmpty))
-    yield SdpCommands.RunConfig(host, port, storage, defaultCatalog, defaultDatabase)
+      useTls          <- env(UseTlsVar)
+      token           <- env(TokenVar)
+      deadline        <- env(DeadlineVar)
+      transport <- ZIO.fromEither(
+        TransportConfig
+          .parse(useTls, token, deadline, tlsVarName = UseTlsVar, deadlineVarName = DeadlineVar)
+          .left
+          .map(SdpCommands.CommandError.BadConfig(_))
+      )
+      runTimeoutRaw <- env(RunTimeoutVar)
+      runTimeout <- ZIO.fromEither(
+        SdpCommands.parsePositiveSeconds(RunTimeoutVar, runTimeoutRaw, default = 600L)
+      )
+    yield SdpCommands.RunConfig(
+      host,
+      port,
+      storage,
+      defaultCatalog,
+      defaultDatabase,
+      transport,
+      runTimeout,
+    )
 
   /** Read one environment variable (12factor: config from env). Goes through
     * the ZIO `System` service so tests can stub the environment. */
@@ -132,15 +170,33 @@ trait SdpApp extends ZIOAppDefault:
           Console.printLine(text).orDie
     }
 
-  /** `run`: resolve env config, register + run, report the graph id. */
+  /** `run`: resolve env config, register + run, report the graph id. The log
+    * line names the transport mode but NEVER the token. */
   private def runCmd(dry: Boolean): IO[SdpCommands.CommandError, Unit] =
     for
-      config  <- runConfig
-      verb     = if dry then "validating" else "running"
-      _       <- Console.printLine(s"sdp: $verb pipeline on sc://${config.host}:${config.port} (dry=$dry, storage=${config.storage})").orDie
-      graphId <- SdpCommands.run(pipeline, config, dry)
-      mode     = if dry then "validated (dry run)" else "executed"
-      _       <- Console.printLine(s"sdp: pipeline $mode; dataflow graph id: $graphId").orDie
+      config <- runConfig
+      verb    = if dry then "validating" else "running"
+      mode    = if config.transport.useTls then "tls" else "plaintext"
+      auth    = if config.transport.token.isDefined then ", bearer token" else ""
+      _ <- Console
+        .printLine(
+          s"sdp: $verb pipeline on sc://${config.host}:${config.port} " +
+            s"($mode$auth, dry=$dry, storage=${config.storage})"
+        )
+        .orDie
+      outcome <- SdpCommands.run(pipeline, config, dry)
+      _ <-
+        if outcome.completed then
+          val what = if dry then "validated (dry run)" else "executed"
+          Console.printLine(s"sdp: pipeline $what; dataflow graph id: ${outcome.graphId}").orDie
+        else
+          Console
+            .printLineError(
+              s"sdp: run still in progress after ${config.runTimeoutSeconds}s — detached. The " +
+                s"server keeps running; raise $RunTimeoutVar or use a terminating source for a " +
+                s"one-shot run. (graph id: ${outcome.graphId})"
+            )
+            .orDie
     yield ()
 
   /** Render expected failures and translate to an exit code; defects still
@@ -179,6 +235,13 @@ trait SdpApp extends ZIOAppDefault:
            |  $DefaultDatabaseVar    Graph default database — the dev/prod switch:
            |                          unqualified dataset names land here
            |                          (dev_eric locally, the real schema in prod).
+           |  $UseTlsVar    true to use TLS (default false = plaintext, the
+           |                          local dev container).
+           |  $TokenVar     Bearer token sent on every call (never logged).
+           |  $DeadlineVar  Per-RPC deadline in seconds for registration calls
+           |                          (default ${TransportConfig.DefaultDeadlineSeconds}).
+           |  $RunTimeoutVar         Seconds to wait for a run before detaching
+           |                          (default 600).
            |
            |validate and manifest are offline and need no environment.""".stripMargin
       )

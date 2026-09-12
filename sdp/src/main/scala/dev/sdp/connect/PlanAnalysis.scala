@@ -1,11 +1,10 @@
 package dev.sdp.connect
 
 import java.util.UUID
-import java.util.concurrent.TimeUnit
 
 import scala.jdk.CollectionConverters.*
 
-import io.grpc.{ManagedChannelBuilder, StatusRuntimeException}
+import io.grpc.StatusRuntimeException
 import org.apache.spark.connect.proto as sc
 import zio.*
 
@@ -25,22 +24,17 @@ object PlanAnalysis:
       host: String,
       port: Int,
       relation: sc.Relation,
+      // Transport security + per-RPC deadline; plaintext/anonymous by default.
+      transport: TransportConfig = TransportConfig.plaintext,
   ): IO[RegistrationError, List[SchemaField]] =
     ZIO.scoped {
-      ZIO
-        .acquireRelease(
-          ZIO.attemptBlocking(ManagedChannelBuilder.forAddress(host, port).usePlaintext().build())
-        )(ch =>
-          ZIO.attemptBlocking {
-            ch.shutdownNow()
-            val _ = ch.awaitTermination(10, TimeUnit.SECONDS)
-          }.orDie
-        )
-        .mapError(e => RegistrationError.TransportFailure(e.toString))
+      ConnectChannel
+        .scoped(host, port, transport)
         .flatMap { channel =>
           ZIO
-            .attemptBlocking {
-              val stub = sc.SparkConnectServiceGrpc.newBlockingStub(channel)
+            .attemptBlockingInterrupt {
+              val stub = ConnectChannel
+                .withDeadline(sc.SparkConnectServiceGrpc.newBlockingStub(channel), transport)
               val request = sc.AnalyzePlanRequest
                 .newBuilder()
                 .setSessionId(UUID.randomUUID().toString)

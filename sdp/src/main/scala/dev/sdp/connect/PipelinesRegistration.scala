@@ -1,12 +1,9 @@
 package dev.sdp.connect
 
 import java.util.UUID
-import java.util.concurrent.TimeUnit
-
-import scala.jdk.CollectionConverters.*
 
 import dev.sdp.core.{PipelineManifest, RunProgress}
-import io.grpc.{ManagedChannel, ManagedChannelBuilder, StatusRuntimeException}
+import io.grpc.StatusRuntimeException
 import org.apache.spark.connect.proto as sc
 import zio.*
 import zio.stream.*
@@ -85,8 +82,11 @@ object PipelinesRegistration:
       // edges silently vanish and dependent flows race. None = omit (legacy).
       defaultCatalog: Option[String] = None,
       defaultDatabase: Option[String] = None,
+      // Transport security + per-RPC deadline. Defaults to plaintext/anonymous:
+      // sc://localhost is the dev container and must keep working untouched.
+      transport: TransportConfig = TransportConfig.plaintext,
   ): ZIO[Scope, RegistrationError, RunHandle] =
-    channel(host, port).flatMap { ch =>
+    ConnectChannel.scoped(host, port, transport).flatMap { ch =>
       val stub      = sc.SparkConnectServiceGrpc.newBlockingStub(ch)
       val sessionId = UUID.randomUUID().toString
 
@@ -94,6 +94,7 @@ object PipelinesRegistration:
         created <- execute(
                      stub,
                      sessionId,
+                     transport,
                      PipelineProtoEncoder.createDataflowGraph(
                        defaultCatalog = defaultCatalog,
                        defaultDatabase = defaultDatabase,
@@ -114,7 +115,7 @@ object PipelinesRegistration:
           .refineOrDie { case e: UnsupportedWireFeature =>
             RegistrationError.UnsupportedWire(e.getMessage)
           }
-        _ <- ZIO.foreachDiscard(commands)(execute(stub, sessionId, _))
+        _ <- ZIO.foreachDiscard(commands)(execute(stub, sessionId, transport, _))
       yield RunHandle(
         graphId,
         runStream(stub, sessionId, PipelineProtoEncoder.startRun(graphId, dry, storage)),
@@ -124,41 +125,33 @@ object PipelinesRegistration:
 
   /** The `StartRun` server-stream as a `ZStream` of parsed progress events.
     *
-    * `ZStream.fromBlockingIterator` runs the blocking gRPC iterator on the
-    * blocking pool and owns its interruption/cleanup — so `.runDrain.timeout`
-    * cancels a never-terminating (continuous) run cleanly, no manual
-    * channel-cancel needed. Failures (the gRPC status) surface as the stream's
-    * error; the progress events leading up to a failure have already been
-    * emitted (and logged), so they are the error context. */
+    * Each pull is an `attemptBlockingInterrupt`, so ZIO interrupts the blocking
+    * thread itself when the drain loses a race — a parked `next()` does not keep
+    * a finalizer waiting. The channel-level [[RunHandle.cancel]] stays as the
+    * definitive escape hatch for a server that never writes anything at all.
+    * NO deadline here on purpose: a real run legitimately takes minutes, and the
+    * caller bounds it by racing the drain against `cancel`.
+    *
+    * Failures (the gRPC status) surface as the stream's error; the progress
+    * events leading up to a failure have already been emitted (and logged), so
+    * they are the error context. */
   private def runStream(
       stub: sc.SparkConnectServiceGrpc.SparkConnectServiceBlockingStub,
       sessionId: String,
       command: sc.PipelineCommand,
   ): ZStream[Any, RegistrationError, RunProgress] =
     ZStream
-      .blocking(ZStream.fromJavaIterator(stub.executePlan(executeRequest(sessionId, command))))
+      .fromZIO(ZIO.attemptBlockingInterrupt(stub.executePlan(executeRequest(sessionId, command))))
+      .flatMap { responses =>
+        ZStream.unfoldZIO(responses) { it =>
+          ZIO.attemptBlockingInterrupt(if it.hasNext then Some((it.next(), it)) else None)
+        }
+      }
       .collect {
         case r if r.hasPipelineEventResult && r.getPipelineEventResult.getEvent.getMessage.nonEmpty =>
           RunProgress.parse(r.getPipelineEventResult.getEvent.getMessage)
       }
       .mapError(grpcError(_, Nil))
-
-  /** A scoped gRPC channel: acquisition and guaranteed shutdown in one place
-    * (Zionomicon ch. 14/15 — the resource cannot leak past the scope).
-    */
-  private def channel(host: String, port: Int): ZIO[Scope, RegistrationError, ManagedChannel] =
-    ZIO
-      .acquireRelease(
-        ZIO.attemptBlocking(
-          ManagedChannelBuilder.forAddress(host, port).usePlaintext().build()
-        )
-      )(ch =>
-        ZIO.attemptBlocking {
-          ch.shutdownNow()
-          val _ = ch.awaitTermination(10, TimeUnit.SECONDS)
-        }.orDie
-      )
-      .mapError(e => RegistrationError.TransportFailure(e.toString))
 
   /** Run one command through the blocking stub, draining the response
     * stream. gRPC status errors map to the typed channel.
@@ -170,14 +163,18 @@ object PipelinesRegistration:
   private def execute(
       stub: sc.SparkConnectServiceGrpc.SparkConnectServiceBlockingStub,
       sessionId: String,
+      transport: TransportConfig,
       command: sc.PipelineCommand,
   ): IO[RegistrationError, List[sc.ExecutePlanResponse]] =
     ZIO.suspendSucceed {
       val request  = executeRequest(sessionId, command)
       val received = scala.collection.mutable.ListBuffer.empty[sc.ExecutePlanResponse]
       ZIO
-        .attemptBlocking {
-          val it = stub.executePlan(request)
+        // Registration commands only write metadata: a deadline keeps a wedged
+        // or unreachable-but-accepting server from hanging the build forever,
+        // and attemptBlockingInterrupt lets an interrupt actually land.
+        .attemptBlockingInterrupt {
+          val it = ConnectChannel.withDeadline(stub, transport).executePlan(request)
           while it.hasNext do received += it.next()
           received.toList
         }

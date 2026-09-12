@@ -48,6 +48,9 @@ write the pipeline object.
 | `sdpSeed` | task | Run `sdpSeedStatements` (DDL/DML) against the server over Spark Connect — a local fixture to create + populate the source/catalog tables an `externalTable` reads, so a full run resolves them |
 | `sdpSeedStatements` | setting | SQL statements `sdpSeed` executes (e.g. `CREATE OR REPLACE TABLE bronze.orders USING delta AS SELECT …`). Default empty |
 | `sdpConnectEndpoint` | setting | gRPC endpoint, `sc://host:port` (default `sc://localhost:15002`) |
+| `sdpConnectUseTls` | setting | `true` to speak TLS (default `false` = plaintext — `sc://localhost` is the dev container) |
+| `sdpConnectToken` | setting | Bearer token attached to every call (`Authorization: Bearer …`). Defaults to the `SDP_CONNECT_TOKEN` env var so the secret stays out of `build.sbt`; `""` = anonymous. Never logged |
+| `sdpConnectDeadline` | setting | Per-RPC deadline in seconds for registration/seed/analyze calls (default 60) so a wedged server can't hang the build. The run stream is bounded by `sdpRunTimeout` instead |
 | `sdpStorageRoot` | setting | Checkpoint/metadata root — absolute URI with scheme (default `file:///tmp/sdp/<project>`) |
 | `sdpDefaultCatalog` | setting | Graph default catalog sent in `CreateDataflowGraph` (`""` = omit). Send it on named V2 catalogs — omission can silently drop dependency edges |
 | `sdpDefaultDatabase` | setting | Graph default database — the dev/prod switch (see "Environments" below; `""` = omit) |

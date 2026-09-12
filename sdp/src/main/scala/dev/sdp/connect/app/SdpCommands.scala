@@ -1,7 +1,7 @@
 package dev.sdp.connect.app
 
 import dev.sdp.app.{GraphValidation, ManifestAssembly}
-import dev.sdp.connect.PipelinesRegistration
+import dev.sdp.connect.{PipelinesRegistration, TransportConfig}
 import dev.sdp.core.{GraphFragment, PipelineManifest, PipelineValidationError}
 import zio.*
 
@@ -18,7 +18,10 @@ import zio.*
   */
 object SdpCommands:
 
-  /** Effective configuration for a run, resolved from the environment. */
+  /** Effective configuration for a run, resolved from the environment.
+    *
+    * `transport` carries TLS/bearer/deadline and redacts its token in
+    * `toString`, so echoing a `RunConfig` can never leak the credential. */
   final case class RunConfig(
       host: String,
       port: Int,
@@ -26,6 +29,12 @@ object SdpCommands:
       // Graph defaults — the dev/prod environment switch (see SdpApp env vars).
       defaultCatalog: Option[String] = None,
       defaultDatabase: Option[String] = None,
+      transport: TransportConfig = TransportConfig.plaintext,
+      /** Seconds to wait for the run before detaching (the drain-vs-cancel
+        * race below). A batch or terminating-streaming run finishes well
+        * inside it; an unbounded source hits it and detaches cleanly instead
+        * of wedging the process. */
+      runTimeoutSeconds: Long = 600L,
   )
 
   /** Expected, renderable failures of a subcommand. */
@@ -64,6 +73,23 @@ object SdpCommands:
       case other =>
         Left(CommandError.BadConfig(s"$envVar must look like sc://host:port, got '$other'"))
 
+  /** A positive number of seconds from a raw config value; unset/empty keeps
+    * `default`. Pure and total — a bad value is a `BadConfig`, not a throw. */
+  def parsePositiveSeconds(
+      envVar: String,
+      raw: Option[String],
+      default: Long,
+  ): Either[CommandError, Long] =
+    raw.map(_.trim).filter(_.nonEmpty) match
+      case None => Right(default)
+      case Some(value) =>
+        value.toLongOption.filter(_ > 0) match
+          case Some(n) => Right(n)
+          case None =>
+            Left(
+              CommandError.BadConfig(s"$envVar must be a positive number of seconds, got '$value'")
+            )
+
   /** Assemble + validate the fragments into the canonical manifest. The
     * EXPECTED failure (a cycle, dangling read, unknown column, ...) surfaces
     * as `CommandError.Invalid`. Offline — needs no env, no server. */
@@ -85,19 +111,30 @@ object SdpCommands:
   def manifest(pipeline: List[GraphFragment]): IO[CommandError, String] =
     assemble(pipeline).map(_.render)
 
+  /** The outcome of a run: the graph id, and whether the run actually finished
+    * (false = the drain lost the race against the timeout and we detached; the
+    * server keeps going). */
+  final case class RunOutcome(graphId: String, completed: Boolean)
+
   /** `run`: validate, then register the graph over Spark Connect and drain
     * the run's progress stream (logging each event). `dry = true` maps to the
     * server's validate-only StartRun. The channel is a scoped resource —
     * acquired here, guaranteed shutdown on exit/interrupt
-    * (`PipelinesRegistration.register` owns the acquireRelease). */
+    * (`PipelinesRegistration.register` owns the acquireRelease).
+    *
+    * The drain is RACED against `sleep(timeout) *> handle.cancel`, exactly as
+    * the `RunHandle` scaladoc instructs: a plain `.timeout` can park waiting on
+    * a blocking gRPC pull, so the loser of the race force-closes the channel and
+    * the drain unblocks (Zionomicon ch. 8 — interruption waits for finalizers).
+    */
   def run(
       pipeline: List[GraphFragment],
       config: RunConfig,
       dry: Boolean,
-  ): IO[CommandError, String] =
+  ): IO[CommandError, RunOutcome] =
     for
       manifest <- assemble(pipeline)
-      graphId <- ZIO
+      outcome <- ZIO
         .scoped {
           PipelinesRegistration
             .register(
@@ -108,13 +145,17 @@ object SdpCommands:
               dry,
               defaultCatalog = config.defaultCatalog,
               defaultDatabase = config.defaultDatabase,
+              transport = config.transport,
             )
             .flatMap { handle =>
-              handle.progress
+              val drain = handle.progress
                 .tap(p => Console.printLine(s"sdp:   • ${p.raw}").orDie)
                 .runDrain
-                .as(handle.graphId)
+                .as(true)
+              val detach =
+                ZIO.sleep(Duration.fromSeconds(config.runTimeoutSeconds)) *> handle.cancel.as(false)
+              drain.raceFirst(detach).map(RunOutcome(handle.graphId, _))
             }
         }
         .mapError(CommandError.Registration(_))
-    yield graphId
+    yield outcome

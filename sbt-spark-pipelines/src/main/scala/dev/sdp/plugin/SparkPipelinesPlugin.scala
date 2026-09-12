@@ -4,7 +4,7 @@ import java.net.{URL, URLClassLoader}
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path}
 
-import dev.sdp.connect.{AlgebraProtoEncoder, CatalogSeeder, PipelinesRegistration, PlanAnalysis}
+import dev.sdp.connect.{AlgebraProtoEncoder, CatalogSeeder, PipelinesRegistration, PlanAnalysis, TransportConfig}
 import dev.sdp.connect.app.ValidationRendering
 import dev.sdp.core.GraphFragment
 import sbt.*
@@ -42,6 +42,19 @@ object SparkPipelinesPlugin extends AutoPlugin {
   object autoImport {
     val sdpConnectEndpoint = settingKey[String](
       "Spark Connect gRPC endpoint, e.g. sc://localhost:15002."
+    )
+    val sdpConnectUseTls = settingKey[Boolean](
+      "Speak TLS to sdpConnectEndpoint instead of plaintext. Default false — sc://localhost is the " +
+        "dev container. Set true for a managed endpoint (together with sdpConnectToken)."
+    )
+    val sdpConnectToken = settingKey[String](
+      "Bearer token attached to every Spark Connect call (Authorization: Bearer …). \"\" (default) = " +
+        "anonymous; defaults to the SDP_CONNECT_TOKEN environment variable so the secret need not " +
+        "live in build.sbt. Never logged."
+    )
+    val sdpConnectDeadline = settingKey[Int](
+      "Per-RPC deadline in seconds for the registration/seed/analyze calls (default 60) so a wedged " +
+        "server cannot hang the build. The run stream is bounded by sdpRunTimeout instead."
     )
     val sdpStorageRoot = settingKey[String](
       "Pipeline checkpoint/metadata root — absolute URI with scheme (file://, s3a://, ...)."
@@ -187,6 +200,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
         timeoutSeconds = sdpRunTimeout.value,
         defaultCatalog = sdpDefaultCatalog.value,
         defaultDatabase = sdpDefaultDatabase.value,
+        transport = transportConfig(sdpConnectUseTls.value, sdpConnectToken.value, sdpConnectDeadline.value),
       )
     },
 
@@ -206,6 +220,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
         timeoutSeconds = sdpRunTimeout.value,
         defaultCatalog = sdpDefaultCatalog.value,
         defaultDatabase = sdpDefaultDatabase.value,
+        transport = transportConfig(sdpConnectUseTls.value, sdpConnectToken.value, sdpConnectDeadline.value),
       )
     },
 
@@ -236,6 +251,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
         timeoutSeconds = sdpRunTimeout.value,
         defaultCatalog = sdpDefaultCatalog.value,
         defaultDatabase = sdpDefaultDatabase.value,
+        transport = transportConfig(sdpConnectUseTls.value, sdpConnectToken.value, sdpConnectDeadline.value),
       )
     },
 
@@ -249,8 +265,16 @@ object SparkPipelinesPlugin extends AutoPlugin {
         intervalSeconds = sdpWatchInterval.value,
         defaultCatalog = sdpDefaultCatalog.value,
         defaultDatabase = sdpDefaultDatabase.value,
+        transport = transportConfig(sdpConnectUseTls.value, sdpConnectToken.value, sdpConnectDeadline.value),
       )
     },
+
+    // Plaintext + anonymous by default: the inner loop talks to a local
+    // container. The token default reads the environment ONCE, in a setting —
+    // never inside a cached task body (that would break cache stability).
+    sdpConnectUseTls   := false,
+    sdpConnectToken    := sys.env.getOrElse("SDP_CONNECT_TOKEN", ""),
+    sdpConnectDeadline := 60,
 
     sdpStorageRoot   := s"file:///tmp/sdp/${name.value}",
     sdpPushDryRun    := true,
@@ -272,7 +296,12 @@ object SparkPipelinesPlugin extends AutoPlugin {
       else
         val (host, port) = parseEndpoint(sdpConnectEndpoint.value)
         log.info(s"sdp: seeding ${statements.size} statement(s) on ${sdpConnectEndpoint.value}")
-        SdpZioBridge.run(CatalogSeeder.run(host, port, statements)) match
+        val transport = transportConfig(
+          sdpConnectUseTls.value,
+          sdpConnectToken.value,
+          sdpConnectDeadline.value,
+        )
+        SdpZioBridge.run(CatalogSeeder.run(host, port, statements, transport)) match
           case Left(err) => sys.error(s"sdp: seeding failed — ${err.describe}")
           case Right(_)  => log.info(s"sdp: seeded ${statements.size} statement(s).")
     },
@@ -319,6 +348,11 @@ object SparkPipelinesPlugin extends AutoPlugin {
                 port,
                 AlgebraProtoEncoder.relation(
                   dev.sdp.core.algebra.Rel.NamedTable(table, streaming = false)
+                ),
+                transportConfig(
+                  sdpConnectUseTls.value,
+                  sdpConnectToken.value,
+                  sdpConnectDeadline.value,
                 ),
               )
             ) match
@@ -434,6 +468,16 @@ object SparkPipelinesPlugin extends AutoPlugin {
         sys.error(s"sdp: evaluating '$fqn'.pipeline failed — ${cause.getClass.getName}: ${cause.getMessage}")
     finally loader.close()
 
+  /** Transport settings → the connect [[TransportConfig]]. Plaintext + anonymous
+    * unless the build asks otherwise; an empty token means anonymous, and the
+    * token is never logged (TransportConfig redacts it in `toString`). */
+  private def transportConfig(useTls: Boolean, token: String, deadlineSeconds: Int): TransportConfig =
+    TransportConfig(
+      useTls = useTls,
+      token = Some(token).map(_.trim).filter(_.nonEmpty),
+      deadlineSeconds = deadlineSeconds.toLong,
+    )
+
   /** `sc://host:port` → (host, port), with a readable failure. */
   private def parseEndpoint(endpoint: String): (String, Int) =
     endpoint match
@@ -455,6 +499,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
       timeoutSeconds: Int,
       defaultCatalog: String = "",
       defaultDatabase: String = "",
+      transport: TransportConfig = TransportConfig.plaintext,
   ): Unit =
     val manifestPath = conv.toPath(manifestRef)
     val manifestText = new String(Files.readAllBytes(manifestPath), UTF_8)
@@ -482,6 +527,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
           dry,
           defaultCatalog = Some(defaultCatalog).filter(_.nonEmpty),
           defaultDatabase = Some(defaultDatabase).filter(_.nonEmpty),
+          transport = transport,
         )
         .flatMap { handle =>
         val drain = handle.progress
@@ -521,6 +567,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
       intervalSeconds: Int,
       defaultCatalog: String = "",
       defaultDatabase: String = "",
+      transport: TransportConfig = TransportConfig.plaintext,
   ): Unit =
     val manifestPath = conv.toPath(manifestRef)
     val manifestText = new String(Files.readAllBytes(manifestPath), UTF_8)
@@ -544,6 +591,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
           dry = false,
           defaultCatalog = Some(defaultCatalog).filter(_.nonEmpty),
           defaultDatabase = Some(defaultDatabase).filter(_.nonEmpty),
+          transport = transport,
         )
         .flatMap { handle =>
         handle.progress

@@ -164,6 +164,34 @@ object SdpAppSpec extends ZIOSpecDefault:
           out.mkString.contains("Usage:"),
         )
       },
+      test("a malformed SDP_CONNECT_USE_TLS renders one line + usage, exits 1") {
+        for
+          _    <- TestSystem.putEnv("SDP_CONNECT_USE_TLS", "maybe")
+          _    <- TestSystem.putEnv("SDP_CONNECT_TOKEN", "super-secret-pat")
+          code <- TestApp.dispatch(List("run", "--dry"))
+          err  <- TestConsole.outputErr
+          out  <- TestConsole.output
+        yield assertTrue(
+          code == ExitCode.failure,
+          err.mkString.contains("SDP_CONNECT_USE_TLS must be true or false, got 'maybe'"),
+          out.mkString.contains("Usage:"),
+          // the token must never reach stdout or stderr
+          !err.mkString.contains("super-secret-pat"),
+          !out.mkString.contains("super-secret-pat"),
+        )
+      },
+      test("SDP_RUN_TIMEOUT must be a positive number of seconds") {
+        assertTrue(
+          SdpCommands.parsePositiveSeconds("SDP_RUN_TIMEOUT", None, default = 600L) == Right(600L),
+          SdpCommands.parsePositiveSeconds("SDP_RUN_TIMEOUT", Some(" 90 "), 600L) == Right(90L),
+          SdpCommands
+            .parsePositiveSeconds("SDP_RUN_TIMEOUT", Some("soon"), 600L)
+            .left
+            .map(_.render) ==
+            Left("sdp: SDP_RUN_TIMEOUT must be a positive number of seconds, got 'soon'"),
+          SdpCommands.parsePositiveSeconds("SDP_RUN_TIMEOUT", Some("0"), 600L).isLeft,
+        )
+      },
       test("a malformed endpoint is a typed BadConfig, not a defect") {
         assertTrue(
           SdpCommands.parseEndpoint("SDP_CONNECT_ENDPOINT", "sc://localhost:15002") ==

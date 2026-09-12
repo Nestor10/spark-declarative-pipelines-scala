@@ -1,9 +1,8 @@
 package dev.sdp.connect
 
 import java.util.UUID
-import java.util.concurrent.TimeUnit
 
-import io.grpc.{ManagedChannelBuilder, StatusRuntimeException}
+import io.grpc.StatusRuntimeException
 import org.apache.spark.connect.proto as sc
 import zio.*
 
@@ -33,22 +32,25 @@ object CatalogSeeder:
       host: String,
       port: Int,
       statements: List[String],
+      // Transport security + per-RPC deadline; plaintext/anonymous by default.
+      transport: TransportConfig = TransportConfig.plaintext,
   ): IO[RegistrationError, Unit] =
     ZIO.scoped {
-      channel(host, port).flatMap { channel =>
+      ConnectChannel.scoped(host, port, transport).flatMap { channel =>
         val stub      = sc.SparkConnectServiceGrpc.newBlockingStub(channel)
         val sessionId = UUID.randomUUID().toString
-        ZIO.foreachDiscard(statements)(sql => exec(stub, sessionId, sql))
+        ZIO.foreachDiscard(statements)(sql => exec(stub, sessionId, transport, sql))
       }
     }
 
   private def exec(
       stub: sc.SparkConnectServiceGrpc.SparkConnectServiceBlockingStub,
       sessionId: String,
+      transport: TransportConfig,
       sql: String,
   ): IO[RegistrationError, Unit] =
     ZIO
-      .attemptBlocking {
+      .attemptBlockingInterrupt {
         val request = sc.ExecutePlanRequest
           .newBuilder()
           .setSessionId(sessionId)
@@ -59,7 +61,7 @@ object CatalogSeeder:
               .setRoot(sc.Relation.newBuilder().setSql(sc.SQL.newBuilder().setQuery(sql)))
           )
           .build()
-        val it = stub.executePlan(request)
+        val it = ConnectChannel.withDeadline(stub, transport).executePlan(request)
         while it.hasNext do { val _ = it.next() } // drain — eager DDL/DML runs here
       }
       .mapError {
@@ -68,14 +70,3 @@ object CatalogSeeder:
         case other => RegistrationError.TransportFailure(s"$other\n  in: $sql")
       }
 
-  private def channel(host: String, port: Int): ZIO[Scope, RegistrationError, io.grpc.ManagedChannel] =
-    ZIO
-      .acquireRelease(
-        ZIO.attemptBlocking(ManagedChannelBuilder.forAddress(host, port).usePlaintext().build())
-      )(ch =>
-        ZIO.attemptBlocking {
-          ch.shutdownNow()
-          val _ = ch.awaitTermination(10, TimeUnit.SECONDS)
-        }.orDie
-      )
-      .mapError(e => RegistrationError.TransportFailure(e.toString))
