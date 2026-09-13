@@ -29,8 +29,8 @@ object BehaviorCoverageSpec extends ZIOSpecDefault:
         try { val _ = Class.forName(fqn, false, loader); true }
         catch case _: ClassNotFoundException => false
 
-  /** The frozen snapshot: every behavior id and its status (56 rows — 16 covered,
-    * 5 not applicable, 35 honest gaps). A coverage change must be reflected here
+  /** The frozen snapshot: every behavior id and its status (57 rows — 18 covered,
+    * 5 not applicable, 34 honest gaps). A coverage change must be reflected here
     * in the same commit that changes it. */
   private val expectedSnapshot: List[(String, String)] = List(
     "REG-1-command-envelope"         -> "Covered(PipelinesRegistrationIntegrationSpec)",
@@ -46,8 +46,9 @@ object BehaviorCoverageSpec extends ZIOSpecDefault:
     "REG-11-unimplemented-commands"  -> "NotApplicable",
     "DEF-1-fallback-mutates-session" -> "Uncovered",
     "DEF-2-four-consumers"           -> "Uncovered",
-    "DEF-3-edge-drop"                -> "Uncovered",
+    "DEF-3-edge-drop"                -> "Covered(EdgeDropProbeSpec)",
     "DEF-4-views-not-inputs"         -> "Uncovered",
+    "DEF-5-misqualified-read-is-external" -> "Covered(EdgeDropProbeSpec)",
     "MAT-1-create"                   -> "Uncovered",
     "MAT-2-alter-only-on-rerun"      -> "Uncovered",
     "MAT-3-props-never-removed"      -> "Uncovered",

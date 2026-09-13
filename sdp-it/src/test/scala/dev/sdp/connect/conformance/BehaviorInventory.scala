@@ -32,7 +32,9 @@ package dev.sdp.connect.conformance
   * HEAD 919f0808549 (2026-09-12). **Master is not the server anyone runs**: the
   * AUTO CDC area (CDC-*) is anchored to the `v4.2.0` tag instead, because that
   * is the released server those rows were measured against — where master
-  * differs (SCD2 exists there, SCD1-only here), the row says so.
+  * differs (SCD2 exists there, SCD1-only here), the row says so. DEF-3 and
+  * DEF-5 are v4.2.0-anchored for the same reason, and carry line numbers from
+  * that tag because the mechanism is a specific pair of call sites.
   */
 object BehaviorInventory:
 
@@ -95,6 +97,7 @@ object BehaviorInventory:
   private val AutoCdcIT      = "dev.sdp.connect.AutoCdcE2eSpec"
   private val IcebergCdcIT   = "dev.sdp.connect.IcebergAutoCdcE2eSpec"
   private val FullRefreshIT  = "dev.sdp.connect.FullRefreshE2eSpec"
+  private val EdgeDropIT     = "dev.sdp.connect.EdgeDropProbeSpec"
 
   private def reg(id: String, what: String, anchor: String, coverage: Coverage, m: List[String] = Nil) =
     Behavior(id, Area.Registration, what, anchor, coverage, m)
@@ -183,30 +186,66 @@ object BehaviorInventory:
       Area.GraphDefaults,
       "absent default_catalog/default_database fall back to the session's CURRENT catalog/database — and then the server SETS them on the session, so graph creation mutates session state",
       "sql/connect/server/.../connect/pipelines/PipelinesHandler.scala → PipelinesHandler.createDataflowGraph",
-      Coverage.Uncovered("measured by hand 2026-06-13; the client now sends both whenever configured (sdpDefaultCatalog/Database, SDP_DEFAULT_*)"),
-      List("No default catalog was supplied. Falling back to the current catalog:"),
+      Coverage.Uncovered(
+        "measured by hand 2026-06-13; the client now sends both whenever configured (sdpDefaultCatalog/Database, " +
+          "SDP_DEFAULT_*). Measured again 2026-09-13: a default_database naming a namespace that does not exist " +
+          "fails at CreateDataflowGraph itself — INTERNAL / SCHEMA_NOT_FOUND — because the server sets the " +
+          "database on the session while creating the graph, so the namespace must already exist before the first " +
+          "DefineOutput, not merely before the run"
+      ),
+      List(
+        "No default catalog was supplied. Falling back to the current catalog:",
+        "SCHEMA_NOT_FOUND",
+      ),
     ),
     Behavior(
       "DEF-2-four-consumers",
       Area.GraphDefaults,
       "the captured defaults qualify four independent things: DefineOutput identifiers, flow identifiers, the flow's read-resolution QueryContext, and StartRun refresh selections",
       "sql/connect/server/.../connect/pipelines/PipelinesHandler.scala → PipelinesHandler.defineOutput / defineFlow / createTableFilters",
-      Coverage.Uncovered("no spec exercises a named V2 catalog end to end"),
+      Coverage.Uncovered(
+        "no spec exercises a named V2 catalog end to end. Measured 2026-09-13 that the catalog KIND is not a " +
+          "trigger for DEF-3: under a named V2 catalog (SparkCatalog with a Nessie-style configuration) the edge " +
+          "behaves exactly as it does under spark_catalog — clean, and the drop tracks the operator instead"
+      ),
     ),
     Behavior(
       "DEF-3-edge-drop",
       Area.GraphDefaults,
-      "a read whose qualified identifier is not in DataflowGraph.inputIdentifiers silently becomes an EXTERNAL input: no graph edge, no ordering — fresh runs fail TABLE_OR_VIEW_NOT_FOUND, re-runs silently read the previous run's materialized table",
-      "sql/pipelines/.../graph/FlowAnalysis.scala → FlowAnalysis.readBatchInput / readExternalBatchInput; sql/pipelines/.../graph/Flow.scala → FlowFunctionResult.inputs",
-      Coverage.Uncovered("directly measured 2026-06-13 (source-fails / middle-completes skip test): edge present fresh, ABSENT on re-run, identical on the Python CLI — an upstream bug, not our client"),
-      List("TABLE_OR_VIEW_NOT_FOUND", "42P01"),
+      "a dependency edge is registered ONLY when FlowAnalysis's `case u: UnresolvedRelation` rewrite fires. SparkConnectPlanner.transformWithColumns / transformWithColumnsRenamed — and every planner transform that eagerly `Dataset.ofRows` its child (drop, sample, na.*, stat.*, toSchema, parse, asOfJoin) — resolve that child against the CATALOG at DefineFlow time, so once the upstream table exists the read arrives pre-resolved, no UnresolvedRelation is left and NO edge is recorded: the downstream flow is then scheduled concurrently with its own upstream and reads the table DatasetManager has just TRUNCATEd (FR-1), landing 0 rows under a COMPLETED run. On a clean catalog the withColumn try/catch fallback preserves the UnresolvedRelation, which is why run 1 is correct",
+      "sql/connect/server/.../connect/planner/SparkConnectPlanner.scala → transformWithColumns (v4.2.0 :1312) / transformWithColumnsRenamed (:1287) / transformDrop (:2639); sql/pipelines/.../graph/FlowAnalysis.scala → FlowAnalysis.analyze (`case u: UnresolvedRelation`, :118 streaming / :129 batch); sql/connect/server/.../connect/pipelines/PipelinesHandler.scala → PipelinesHandler.defineFlow (:391)",
+      Coverage.Covered(
+        EdgeDropIT,
+        "two runs each of two pipelines that differ in one operator, on stock 4.2.0: the `select` control holds " +
+          "2 rows on both runs, `withColumn` holds 2 on the fresh run and 0 on the re-run with its upstream still " +
+          "at 2. Reproduced independently with the official Python `spark-pipelines` CLI shipped in the same " +
+          "image (transcripts, server logs and explain dumps in " +
+          "context/upstream/spark-sdp-eager-analysis-edge-drop.md); upstream issue SPARK-XXXXX. The spec asserts " +
+          "the CURRENT behavior, so it turns red on the day the fix lands",
+      ),
+      List("TABLE_OR_VIEW_NOT_FOUND", "42P01", "UnresolvedRelation"),
     ),
     Behavior(
       "DEF-4-views-not-inputs",
       Area.GraphDefaults,
       "inputIdentifiers = flows ++ tables: a view is NOT directly an input — it is reachable only through its (unqualified) implicit flow identifier",
       "sql/pipelines/.../graph/DataflowGraph.scala → DataflowGraph.inputIdentifiers",
-      Coverage.Uncovered("our MV/TV reads go through SQL bodies, so we have never had to depend on this; it is the mechanism behind DEF-3 for view reads"),
+      Coverage.Uncovered("our MV/TV reads go through SQL bodies, so we have never had to depend on this; it is the membership test DEF-5 falls out of, for view reads"),
+    ),
+    Behavior(
+      "DEF-5-misqualified-read-is-external",
+      Area.GraphDefaults,
+      "a read whose qualified identifier is not in DataflowGraph.inputIdentifiers is not an error: it silently becomes an EXTERNAL input resolved as an ordinary catalog read on the fully-qualified name — so an output declared into one database and read back by its BARE name qualifies against the GRAPH's default database instead, and whatever same-named table lives there is served in its place, with no edge, no ordering and no diagnostic",
+      "sql/pipelines/.../graph/FlowAnalysis.scala → FlowAnalysis.readBatchInput / readExternalBatchInput; sql/pipelines/.../graph/DataflowGraph.scala → DataflowGraph.inputIdentifiers",
+      Coverage.Covered(
+        EdgeDropIT,
+        "a FRESH run whose outputs are declared into `silver` and whose read is bare returns the row of a decoy " +
+          "table pre-seeded in `default` — first run, deterministic, `Run is COMPLETED`. Distinct from DEF-3: no " +
+          "eager analysis is involved and the first run is already wrong. Our offline validator does refuse the " +
+          "undeclared case as a dangling edge, so the probe declares the read `externalTable` to reach the server " +
+          "at all — which is also what an author does to silence that refusal. Unfiled",
+      ),
+      List("TABLE_OR_VIEW_NOT_FOUND", "42P01"),
     ),
 
     // ------------------------------------------------------------ materialization
@@ -479,7 +518,12 @@ object BehaviorInventory:
       Area.ExternalInputs,
       "an in-graph read is served by VirtualTableInput — an EMPTY DataFrame with the inferred schema — never the materialized table, so a flow can never see the previous run's rows of an in-graph dependency",
       "sql/pipelines/.../graph/elements.scala → VirtualTableInput.load; sql/pipelines/.../graph/CoreDataflowNodeProcessor.scala → CoreDataflowNodeProcessor.processNode",
-      Coverage.Uncovered("a load-bearing authoring semantic (it is why DEF-3's silent re-run success is possible) that no spec or doc of ours states"),
+      Coverage.Uncovered(
+        "a load-bearing authoring semantic that no spec or doc of ours states. It also fixes the SHAPE of DEF-3's " +
+          "failure: a read that falls out of the graph stops being served virtually and reads the materialized " +
+          "table instead — which the same run has just truncated — so the downstream lands 0 rows rather than the " +
+          "previous run's stale ones"
+      ),
     ),
     Behavior(
       "EXT-4-cycles",
