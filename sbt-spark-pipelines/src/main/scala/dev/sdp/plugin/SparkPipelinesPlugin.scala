@@ -5,7 +5,7 @@ import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path}
 
 import dev.sdp.connect.{AlgebraProtoEncoder, CatalogSeeder, PipelinesRegistration, PlanAnalysis}
-import dev.sdp.connect.app.ValidationRendering
+import dev.sdp.connect.app.{SdpCommands, ValidationRendering}
 import dev.sdp.core.GraphFragment
 import sbt.*
 import sbt.Keys.*
@@ -118,6 +118,18 @@ object SparkPipelinesPlugin extends AutoPlugin {
     )
     val sdpRun = taskKey[Unit](
       "Register and actually execute the SDP graph (dry = false) — materializes tables. One-shot run."
+    )
+    val sdpFullRefresh = taskKey[Unit](
+      "Register and execute the graph with StartRun.full_refresh_all — the \"rebuild everything\" " +
+        "button. The SERVER does the work: it rolls each streaming flow's checkpoint into a new " +
+        "numbered sibling directory and then wipes the targets, so every table recomputes from its " +
+        "sources. Destructive and never cached. Note `pipelines.reset.allowed=false` on a table " +
+        "silently DEMOTES it to an ordinary refresh — see docs/plugin.md."
+    )
+    val sdpFullRefreshOn = inputKey[Unit](
+      "`sdpFullRefreshOn <target>` — sdpFullRefresh against a named sdpTargets environment " +
+        "(tab-completes the names). Destructive in whichever environment you name: `prod` deserves " +
+        "the same care here as any other production-destructive action."
     )
     val sdpWatch = taskKey[Unit](
       "Re-trigger the pipeline every sdpWatchInterval seconds (Ctrl-C to stop). Each cycle is a " +
@@ -268,6 +280,31 @@ object SparkPipelinesPlugin extends AutoPlugin {
       )
     },
 
+    // The "rebuild everything" button (Databricks calls it Full Refresh). Same
+    // body as `sdpRun` with one flag flipped — because it IS a run, in a
+    // different MODE: the client sends StartRun.full_refresh_all and the SERVER
+    // does the destructive work (State.reset rolls each streaming checkpoint
+    // into a new numbered sibling BEFORE materialization; materialization then
+    // wipes the targets). Nothing is deleted from here, which is why there is no
+    // filesystem code in this plugin and no "are you sure?" prompt: the blast
+    // radius is whatever the named connection points at, exactly as for sdpRun.
+    //
+    // Uncached, like every network task — a full refresh must be reachable
+    // twice in a row without the action cache deciding the second one is a
+    // no-op (which is precisely what an author wants when the first one
+    // demoted silently; see docs/plugin.md on pipelines.reset.allowed).
+    sdpFullRefresh := Def.uncached {
+      pushOrRun(
+        log = streams.value.log,
+        conv = fileConverter.value,
+        conn = TargetResolution.base(baseConnection.value),
+        manifestRef = sdpManifest.value,
+        dry = false,
+        timeoutSeconds = sdpRunTimeout.value,
+        fullRefresh = true,
+      )
+    },
+
     // Offline inner-loop verdict: evaluate + assemble + validate, print the
     // result, write NOTHING. Uncached so `~sdpValidate` re-runs every save.
     // Shares the classload-eval path with sdpManifest (the boundary is strings).
@@ -353,6 +390,24 @@ object SparkPipelinesPlugin extends AutoPlugin {
         manifestRef = sdpManifest.value,
         dry = true,
         timeoutSeconds = sdpRunTimeout.value,
+      )
+    },
+
+    // A full refresh is a run MODE, not a connection property — so the target
+    // contributes exactly what it contributes to `sdpRunOn` (endpoint, catalog/
+    // database, storage, TLS/token) and nothing more. `SdpTarget` gains no
+    // field, `ResolvedConnection` gains no field, and the manifest is untouched:
+    // `sdpFullRefreshOn prod` registers the same bytes `sdpRunOn prod` does.
+    sdpFullRefreshOn := {
+      val requested = targetNameParser.parsed
+      pushOrRun(
+        log = streams.value.log,
+        conv = fileConverter.value,
+        conn = resolveTarget(baseConnection.value, sdpTargets.value, requested, "sdpFullRefreshOn"),
+        manifestRef = sdpManifest.value,
+        dry = false,
+        timeoutSeconds = sdpRunTimeout.value,
+        fullRefresh = true,
       )
     },
 
@@ -656,23 +711,33 @@ object SparkPipelinesPlugin extends AutoPlugin {
       manifestRef: HashedVirtualFileRef,
       dry: Boolean,
       timeoutSeconds: Int,
+      fullRefresh: Boolean = false,
   ): Unit =
+    // The run-mode rule lives in the library (SdpCommands.checkRunMode), not
+    // here: `sdp run --dry --full-refresh` from a user's uber jar and a dry
+    // full refresh through the plugin must refuse in the SAME words, or the two
+    // surfaces have quietly grown different semantics. No task below can
+    // actually produce the combination — it is defence in depth on the shared
+    // body, which is the only place that could ever grow it.
+    SdpCommands.checkRunMode(dry, fullRefresh).left.foreach(reason => sys.error(s"sdp: $reason"))
+
     val manifest = readManifest(conv, manifestRef)
 
-    val verb = if dry then "validating" else "running"
+    val verb = if dry then "validating" else if fullRefresh then "FULL-REFRESHING" else "running"
+    val full = if fullRefresh then ", full-refresh=true" else ""
     log.info(
       s"sdp: $verb ${manifest.nodes.size} dataset(s) on ${conn.endpoint} " +
-        s"(${conn.origin}, dry=$dry, storage=${conn.storageRoot})"
+        s"(${conn.origin}, dry=$dry$full, storage=${conn.storageRoot})"
     )
 
-    SdpZioBridge.run(registerAndDrain(log, conn, manifest, dry, timeoutSeconds)) match
+    SdpZioBridge.run(registerAndDrain(log, conn, manifest, dry, timeoutSeconds, fullRefresh)) match
       case Left(err) =>
         // Name the endpoint AND its provenance: with several targets in play,
         // "which environment did this fail against?" is the first question, and
         // a transport failure otherwise answers it only in the log above.
+        val what = if dry then "validation" else if fullRefresh then "full refresh" else "run"
         sys.error(
-          s"sdp: ${if dry then "validation" else "run"} failed on ${conn.endpoint} " +
-            s"(${conn.origin}) — ${err.describe}"
+          s"sdp: $what failed on ${conn.endpoint} (${conn.origin}) — ${err.describe}"
         )
       case Right((graphId, false)) =>
         log.warn(
@@ -681,7 +746,10 @@ object SparkPipelinesPlugin extends AutoPlugin {
             s"or use a terminating source for a one-shot run. (graph id: $graphId)"
         )
       case Right((graphId, true)) =>
-        val mode = if dry then "validated (dry run)" else "executed"
+        val mode =
+          if dry then "validated (dry run)"
+          else if fullRefresh then "fully refreshed"
+          else "executed"
         log.info(s"sdp: pipeline $mode on the server; dataflow graph id: $graphId")
 
   /** THE registration-and-drain effect, shared by [[pushOrRun]] and every
@@ -702,6 +770,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
       manifest: dev.sdp.core.PipelineManifest,
       dry: Boolean,
       timeoutSeconds: Int,
+      fullRefresh: Boolean = false,
   ): zio.IO[PipelinesRegistration.RegistrationError, (String, Boolean)] =
     val (host, port) = parseEndpoint(conn.endpoint)
     zio.ZIO.scoped {
@@ -712,6 +781,7 @@ object SparkPipelinesPlugin extends AutoPlugin {
           manifest,
           conn.storageRoot,
           dry,
+          fullRefresh,
           defaultCatalog = conn.defaultCatalog,
           defaultDatabase = conn.defaultDatabase,
           transport = conn.transport,

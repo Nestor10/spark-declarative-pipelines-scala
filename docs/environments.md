@@ -201,8 +201,13 @@ exists for a fork whose version string this client reads wrongly; see
 |---|---|
 | `sdpRunOn <target>` | `sdpRun` against that environment (materializes tables) |
 | `sdpDryRunOn <target>` | `sdpDryRun` against that environment (validate only) |
+| `sdpFullRefreshOn <target>` | `sdpFullRefresh` against that environment — resets checkpoints and rebuilds every table. `sdpFullRefreshOn prod` is a production-destructive action and deserves exactly the care you would give one: it is not a retry, and the previous incremental state is gone from the pipeline's point of view. See [plugin.md](plugin.md#full-refresh--sdpfullrefresh) |
 | `sdpSeedOn <target>` | `sdpSeedStatements` against that environment |
 | `sdpTargets` | `Map[String, SdpTarget]`, default empty |
 
 `SdpTarget.userScopedDev(endpoint, catalog)` builds the user-scoped dev target.
-Tab-completion over the declared names works on all three tasks.
+Tab-completion over the declared names works on all four tasks.
+
+A full refresh is a run **mode**, not a connection property: no `SdpTarget`
+field selects it, so `sdpFullRefreshOn prod` registers the same manifest bytes
+`sdpRunOn prod` does and differs only in the one `StartRun` flag it sets.

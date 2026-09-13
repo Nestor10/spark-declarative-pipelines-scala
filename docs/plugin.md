@@ -45,6 +45,8 @@ write the pipeline object.
 | `sdpDryRun` | task | Register the graph server-side in validate-only mode (dry run). Target for `~sdpDryRun` |
 | `sdpPush` | task | **Deprecated — removed in 0.4.** Register the graph; dry or real per `sdpPushDryRun`. Use `sdpDryRun` / `sdpRun` (or the `*On` forms) instead |
 | `sdpRun` | task | Register **and execute** the graph (dry = false, always) — materializes tables; one-shot run with progress |
+| `sdpFullRefresh` | task | Register and execute the graph with `StartRun.full_refresh_all` — **the "rebuild everything" button**. The server rolls each streaming checkpoint to a new numbered sibling and recomputes every table from its sources. Destructive; see [Full refresh](#full-refresh--sdpfullrefresh) |
+| `sdpFullRefreshOn <target>` | input task | `sdpFullRefresh` against a named environment (tab-completes the names) |
 | `sdpWatch` | task | Re-trigger the pipeline every `sdpWatchInterval`s (Ctrl-C to stop) — client-side "continuous": each cycle **re-evaluates your pipeline** and is a triggered run whose AvailableNow resumes from the checkpoint and picks up new data (the server has no true continuous mode) |
 | `sdpSeed` | task | Run `sdpSeedStatements` (DDL/DML) against the server over Spark Connect — a local fixture to create + populate the source/catalog tables an `externalTable` reads, so a full run resolves them |
 | `sdpTargets` | setting | Named environments as typed `SdpTarget` values (`Map[String, SdpTarget]`, default empty) — see [environments.md](environments.md) |
@@ -202,6 +204,90 @@ build, rather than blocking forever. File/CSV/JSON streaming sources work
 natively — declare `.schema("id BIGINT, v STRING")` and it's emitted to the
 server (the raw DDL, verbatim, so `DECIMAL`/`ARRAY`/`STRUCT` survive intact);
 Delta and `rate` self-describe and need no schema.
+
+## Full refresh — `sdpFullRefresh`
+
+`sdpRun` is incremental: a streaming flow resumes from its checkpoint, and only
+data that arrived since the last run is processed. `sdpFullRefresh` is the other
+button — Databricks calls it *Full Refresh* — and it means **throw the
+incremental state away and rebuild from the sources**:
+
+```
+sbt:warehouse> sdpFullRefresh
+[info] sdp: FULL-REFRESHING 4 dataset(s) on sc://localhost:15002 (build settings, dry=false, full-refresh=true, storage=file:///data/sdp-storage)
+[info] sdp:   • Flow spark_catalog.default.silver is QUEUED.
+...
+[info] sdp: pipeline fully refreshed on the server; dataflow graph id: 0540ddba-...
+```
+
+`sdpFullRefreshOn <target>` is the same thing against a named environment (see
+[environments.md](environments.md)).
+
+### What the server actually does
+
+Nothing is deleted from your machine: the client sets one field,
+`StartRun.full_refresh_all` (proto field 3), and the *server* does the work. Its
+semantics, read off the Spark 4.2.0 source (`State.reset`, `DatasetManager`):
+
+- **Streaming checkpoints roll, they are not erased.** A flow's checkpoint lives
+  at `<storageRoot>/_checkpoints/<catalog>/<db>/<table>/<flow>/<n>`, where `<n>`
+  is an integer. A full refresh creates `<n+1>` and the query starts there from
+  batch 0. **The old directory is left in place** — so a full refresh is
+  recoverable-ish (the previous offsets are still on disk) and costs storage
+  each time.
+- **Reset happens BEFORE materialization.** Checkpoints roll first, then the
+  targets are wiped, then flows run. There is no window in which a flow resumes
+  from an old offset into a truncated table.
+- **Materialized views are truncated on every run anyway.** An MV is rewritten
+  by a literal `TRUNCATE TABLE` + insert whether or not you asked for a full
+  refresh, so this task changes nothing for them. (It does mean the target's
+  format must support `TRUNCATE` — Iceberg does, and a plain-parquet target does
+  not.)
+- **Streaming tables are reset and recomputed** — the point of the exercise.
+- **AUTO CDC flows drop their auxiliary state table and replay the source.** The
+  `__spark_autocdc_aux_state_<target>` table SDP maintains next to the target is
+  part of the incremental state, so it goes with the checkpoint.
+
+### The trap: `pipelines.reset.allowed=false`
+
+> `pipelines.reset.allowed=false` behaves differently per mode: an explicit
+> `full_refresh_selection` errors, while `full_refresh_all` **silently DEMOTES**
+> the table to a plain refresh.
+
+That is the exact rule from Spark's own `State.findFlowsToReset`, and it is the
+first thing to check when a full refresh "didn't work": you get a green run, a
+completed pipeline, and no reset — because the table asked not to be resettable
+and `full_refresh_all` politely agreed. There is no warning on the wire and none
+in the event stream. If a table must survive full refreshes, that property is how
+you say so; if you are surprised by one that did, that property is why.
+
+### When to reach for it
+
+The canonical case is **a source whose history changed underneath you**: a CDC
+feed reseeded, a bronze table backfilled with corrected rows, a schema
+expectation that was wrong from the start. An incremental run cannot see any of
+that — the checkpoint says those offsets are done. Before this task the fix was
+to stop everything and `rm -rf` the checkpoint directory under the storage root
+by hand (the sdp-example README still describes that dance); `sdpFullRefresh`
+replaces it with one task that also handles truncation and AUTO CDC state, and
+that works against a remote storage root you cannot `rm -rf` at all.
+
+Reach for it when *correctness* requires a rebuild. Do not reach for it as a
+retry: an ordinary `sdpRun` is the retry, and a full refresh throws away work
+that was not wrong.
+
+### From the uber jar
+
+The same mode on the library-first runner, no sbt involved:
+
+```bash
+java -jar warehouse.jar run --full-refresh
+```
+
+`--dry --full-refresh` is **refused before anything is read or connected** — a
+dry run validates and executes nothing, so there is no checkpoint to reset and no
+table to rebuild. The plugin refuses the same combination in the same words; the
+rule lives in one function (`SdpCommands.checkRunMode`) that both surfaces call.
 
 ## Watching — `sdpWatch`
 

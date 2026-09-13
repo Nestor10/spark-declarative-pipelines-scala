@@ -100,20 +100,38 @@ object PipelineProtoEncoder:
   /** Step 3: start the run. `dry = true` is server-side validation only —
     * the cheapest end-to-end correctness check a build can ask for.
     *
+    * `fullRefreshAll` sets `StartRun.full_refresh_all` (field 3), the "rebuild
+    * everything" button: the server rolls every resettable streaming flow's
+    * checkpoint into a new numbered sibling BEFORE materialization
+    * (`State.reset`, v4.2.0) and materialization then wipes the targets, so the
+    * graph recomputes from its sources. The field is written ONLY when asked —
+    * absence is the default, matching `createDataflowGraph`'s treatment of the
+    * optional graph defaults, so an ordinary run's bytes are unchanged.
+    *
+    * NOT here on purpose: `full_refresh_selection` (field 2) and
+    * `refresh_selection` (field 4), the *selective* forms. They carry server-side
+    * validation rules a client must mirror (no subset together with
+    * `full_refresh_all`; no overlap between the two lists; selections are NOT
+    * transitively expanded, so an unselected upstream is excluded rather than
+    * recomputed) — see `BehaviorInventory` row FR-3. A selective surface is its
+    * own feature; this one is the all-or-nothing button.
+    *
     * @param storage checkpoint/metadata root; the server requires an
     *                absolute URI with a scheme (`file://`, `s3a://`, ...)
     */
-  def startRun(graphId: String, dry: Boolean, storage: String): sc.PipelineCommand =
-    sc.PipelineCommand
+  def startRun(
+      graphId: String,
+      dry: Boolean,
+      storage: String,
+      fullRefreshAll: Boolean = false,
+  ): sc.PipelineCommand =
+    val run = sc.PipelineCommand.StartRun
       .newBuilder()
-      .setStartRun(
-        sc.PipelineCommand.StartRun
-          .newBuilder()
-          .setDataflowGraphId(graphId)
-          .setDry(dry)
-          .setStorage(storage)
-      )
-      .build()
+      .setDataflowGraphId(graphId)
+      .setDry(dry)
+      .setStorage(storage)
+    if fullRefreshAll then { val _ = run.setFullRefreshAll(true) }
+    sc.PipelineCommand.newBuilder().setStartRun(run).build()
 
   /** The server's own undo for step 1: drop the graph and stop anything
     * attached to it (`pipelines.proto` field 4 — `DropDataflowGraph`, handled

@@ -392,6 +392,36 @@ object PipelineProtoEncoderSpec extends ZIOSpecDefault:
       )
     },
 
+    test("startRun writes full_refresh_all (field 3) only when a full refresh is asked for") {
+      // Asserted by DESCRIPTOR, not by the getter: `full_refresh_all` is an
+      // `optional bool`, so `getFullRefreshAll` reads false both when the field
+      // is absent and when it is present-and-false. Presence is the thing that
+      // matters — an ordinary run's bytes must not change at all, because that
+      // is what keeps "sdpRun did not reset anything" a property of the wire and
+      // not of a server default.
+      val d     = sc.PipelineCommand.StartRun.getDescriptor
+      val field = d.findFieldByName("full_refresh_all")
+      val plain = reparse(PipelineProtoEncoder.startRun(graphId, dry = false, "file:///tmp/sdp")).getStartRun
+      val full = reparse(
+        PipelineProtoEncoder.startRun(graphId, dry = false, "file:///tmp/sdp", fullRefreshAll = true)
+      ).getStartRun
+      assertTrue(
+        field.getNumber == 3,
+        // default: the field is not on the wire at all
+        !plain.hasField(field),
+        !plain.getFullRefreshAll,
+        // asked for: present AND true
+        full.hasField(field),
+        full.getFullRefreshAll,
+        // …and a full refresh changes NOTHING else about the command
+        full.getDataflowGraphId == plain.getDataflowGraphId,
+        full.getStorage == plain.getStorage,
+        full.getDry == plain.getDry,
+        // the selective fields (FR-3) stay empty — this feature is all-or-nothing
+        full.getFullRefreshSelectionCount == 0,
+        full.getRefreshSelectionCount == 0,
+      )
+    },
     test("createDataflowGraph sets default_catalog/database only when Some (proto fields 1/2)") {
       val none        = reparse(PipelineProtoEncoder.createDataflowGraph()).getCreateDataflowGraph
       val catalogOnly = reparse(PipelineProtoEncoder.createDataflowGraph(defaultCatalog = Some("warehouse"))).getCreateDataflowGraph

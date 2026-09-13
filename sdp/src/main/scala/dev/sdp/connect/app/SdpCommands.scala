@@ -64,6 +64,33 @@ object SdpCommands:
       case BadConfig(_) => true
       case _            => false
 
+  // ------------------------------------------------------------------
+  // run modes
+  // ------------------------------------------------------------------
+
+  /** The ONE sentence both front ends print when asked for a dry full refresh.
+    *
+    * Written once and shared (the sbt plugin reads it too) because it is the
+    * *rule*, not a message: `sdp run --dry --full-refresh` and a hypothetical
+    * dry `sdpFullRefresh` must refuse identically, or the two surfaces have
+    * quietly grown different semantics. It is the SENTENCE only — every caller
+    * here already prefixes `sdp: ` on its own way to the console. */
+  val DryFullRefreshRefusal: String =
+    "a dry run cannot also be a full refresh — a dry run asks the server to validate and execute " +
+      "nothing, so there is no checkpoint to reset and no table to rebuild. Ask for one or the other."
+
+  /** The run-mode rule, as a pure total function: `dry` and `fullRefresh` are
+    * mutually exclusive.
+    *
+    * Refused CLIENT-SIDE, before a channel is opened. The server would in fact
+    * accept the combination — `PipelinesHandler.startRun` builds the table
+    * filters from `full_refresh_all` and only then branches on `dry` — but what
+    * `dryRunPipeline()` does with a full-refresh filter is unverified, and a
+    * destructive-sounding flag whose effect nobody has measured is exactly the
+    * kind of thing an author should not be able to type by accident. */
+  def checkRunMode(dry: Boolean, fullRefresh: Boolean): Either[String, Unit] =
+    if dry && fullRefresh then Left(DryFullRefreshRefusal) else Right(())
+
   /** `sc://host:port` → `(host, port)`. A malformed endpoint is an EXPECTED
     * config failure in the typed channel (`BadConfig`) — the operator fixes
     * the env var — not an `IllegalArgumentException` defect.
@@ -138,7 +165,10 @@ object SdpCommands:
 
   /** `run`: validate, then register the graph over Spark Connect and drain
     * the run's progress stream (logging each event). `dry = true` maps to the
-    * server's validate-only StartRun. The channel is a scoped resource —
+    * server's validate-only StartRun; `fullRefresh = true` to
+    * `StartRun.full_refresh_all`, and the two are mutually exclusive
+    * ([[checkRunMode]]) — refused here, before a single fragment is assembled.
+    * The channel is a scoped resource —
     * acquired here, guaranteed shutdown on exit/interrupt
     * (`PipelinesRegistration.register` owns the acquireRelease).
     *
@@ -151,8 +181,10 @@ object SdpCommands:
       pipeline: List[GraphFragment],
       config: RunConfig,
       dry: Boolean,
+      fullRefresh: Boolean = false,
   ): IO[CommandError, RunOutcome] =
     for
+      _ <- ZIO.fromEither(checkRunMode(dry, fullRefresh)).mapError(CommandError.BadConfig(_))
       manifest <- assemble(pipeline)
       outcome <- ZIO
         .scoped {
@@ -163,6 +195,7 @@ object SdpCommands:
               manifest,
               config.storage,
               dry,
+              fullRefresh,
               defaultCatalog = config.defaultCatalog,
               defaultDatabase = config.defaultDatabase,
               transport = config.transport,

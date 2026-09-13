@@ -77,6 +77,12 @@ object PipelinesRegistration:
     *                an absolute URI with a scheme even for dry runs
     * @param dry     when true (the safe default) the server only validates;
     *                no flows execute
+    * @param fullRefresh ask the server to rebuild everything:
+    *                `StartRun.full_refresh_all`. Streaming checkpoints roll to a
+    *                new numbered sibling and targets are wiped, so the graph
+    *                recomputes from its sources. Destructive, hence false by
+    *                default. Never combined with `dry` — see
+    *                [[dev.sdp.connect.app.SdpCommands.checkRunMode]].
     */
   def register(
       host: String,
@@ -84,6 +90,7 @@ object PipelinesRegistration:
       manifest: PipelineManifest,
       storage: String = "file:///tmp/sdp-dry-run",
       dry: Boolean = true,
+      fullRefresh: Boolean = false,
       sqlConf: Map[String, String] = Map.empty,
       // Graph defaults (CreateDataflowGraph fields 1/2). The official Python
       // client ALWAYS sends them; omitting routes the server onto a session
@@ -104,6 +111,7 @@ object PipelinesRegistration:
         manifest,
         storage,
         dry,
+        fullRefresh,
         sqlConf,
         defaultCatalog,
         defaultDatabase,
@@ -124,6 +132,7 @@ object PipelinesRegistration:
       manifest: PipelineManifest,
       storage: String,
       dry: Boolean,
+      fullRefresh: Boolean,
       sqlConf: Map[String, String],
       defaultCatalog: Option[String],
       defaultDatabase: Option[String],
@@ -157,7 +166,11 @@ object PipelinesRegistration:
         _ <- defineAll(transport, sessionId, graphId, manifest)
       yield RunHandle(
         graphId,
-        runStream(transport, sessionId, PipelineProtoEncoder.startRun(graphId, dry, storage)),
+        runStream(
+          transport,
+          sessionId,
+          PipelineProtoEncoder.startRun(graphId, dry, storage, fullRefreshAll = fullRefresh),
+        ),
         cancel = transport.cancel,
       )
     }

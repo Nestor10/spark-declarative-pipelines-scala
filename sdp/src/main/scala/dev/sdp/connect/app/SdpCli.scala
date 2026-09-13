@@ -18,7 +18,7 @@ object SdpCli:
     case Usage
     case Validate
     case Manifest(out: Option[String])
-    case Run(dry: Boolean)
+    case Run(dry: Boolean, fullRefresh: Boolean = false)
 
   /** Everything an argv can get wrong, rendered as one readable line. The
     * caller prints the usage text after it. */
@@ -27,10 +27,17 @@ object SdpCli:
     case UnexpectedArg(command: String, token: String)
     case MissingValue(command: String, flag: String)
 
+    /** Two flags that are each fine alone and contradictory together. The
+      * `reason` is the shared rule's own sentence (see
+      * [[SdpCommands.DryFullRefreshRefusal]]) so this front end and the sbt
+      * plugin refuse in the same words. */
+    case ConflictingFlags(command: String, reason: String)
+
     def render: String = this match
       case UnknownCommand(token)       => s"sdp: unknown command '$token'"
       case UnexpectedArg(cmd, token)   => s"sdp: $cmd: unexpected argument '$token'"
       case MissingValue(cmd, flag)     => s"sdp: $cmd: $flag requires a value"
+      case ConflictingFlags(cmd, why)  => s"sdp: $cmd: $why"
 
   /** Parse an argv. Every subcommand rejects tokens it does not know. */
   def parse(args: List[String]): Either[CliError, Command] =
@@ -39,7 +46,7 @@ object SdpCli:
       case ("--help" | "-h") :: rest => noExtras("--help", rest, Command.Usage)
       case "validate" :: rest        => noExtras("validate", rest, Command.Validate)
       case "manifest" :: rest        => manifestArgs(rest, None)
-      case "run" :: rest             => runArgs(rest, dry = false)
+      case "run" :: rest             => runArgs(rest, dry = false, fullRefresh = false)
       case token :: _                => Left(CliError.UnknownCommand(token))
 
   /** `manifest [--out <path> | -o <path>]` — nothing else. */
@@ -52,13 +59,28 @@ object SdpCli:
           case _                                     => Left(CliError.MissingValue("manifest", flag))
       case token :: _ => Left(CliError.UnexpectedArg("manifest", token))
 
-  /** `run [--dry]` — nothing else. A near-miss like `--dry-run` is an error,
-    * never a silent real run. */
-  private def runArgs(args: List[String], dry: Boolean): Either[CliError, Command] =
+  /** `run [--dry] [--full-refresh]` — nothing else. A near-miss like
+    * `--dry-run` is an error, never a silent real run; and the one combination
+    * that means nothing (`--dry --full-refresh`) is refused HERE, at parse time,
+    * so no environment is read and no channel is opened. Flags may repeat and
+    * may appear in either order — they are idempotent statements of intent, and
+    * `--full-refresh --dry` must fail exactly like `--dry --full-refresh`, which
+    * is why the conflict is checked once, at the end. */
+  private def runArgs(
+      args: List[String],
+      dry: Boolean,
+      fullRefresh: Boolean,
+  ): Either[CliError, Command] =
     args match
-      case Nil             => Right(Command.Run(dry))
-      case "--dry" :: rest => runArgs(rest, dry = true)
-      case token :: _      => Left(CliError.UnexpectedArg("run", token))
+      case Nil =>
+        SdpCommands
+          .checkRunMode(dry, fullRefresh)
+          .left
+          .map(CliError.ConflictingFlags("run", _))
+          .map(_ => Command.Run(dry, fullRefresh))
+      case "--dry" :: rest          => runArgs(rest, dry = true, fullRefresh)
+      case "--full-refresh" :: rest => runArgs(rest, dry, fullRefresh = true)
+      case token :: _               => Left(CliError.UnexpectedArg("run", token))
 
   private def noExtras(
       command: String,

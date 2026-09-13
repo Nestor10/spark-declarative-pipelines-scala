@@ -243,6 +243,24 @@ object TargetResolutionSpec extends ZIOSpecDefault:
           // ResolvedConnection has exactly 7 fields, all connection-shaped
           dev.map(_.productArity) == Right(7),
         )
-      }
+      },
+      test("a full refresh is a run MODE, so target resolution knows nothing about it") {
+        // `sdpFullRefreshOn prod` and `sdpRunOn prod` must resolve to the SAME
+        // connection — the only difference between them is the flag the shared
+        // `pushOrRun` body passes to StartRun. If a `fullRefresh` field ever
+        // appeared on SdpTarget or ResolvedConnection, an environment could
+        // decide to reset checkpoints on its own, and "dev and prod run the same
+        // bytes in the same mode" would stop being true.
+        val conn   = TargetResolution.resolve(base, "prod", prod.copy(tokenEnv = None), noEnv)
+        val fields = conn.map(_.productElementNames.toList).getOrElse(Nil) ++
+          prod.productElementNames.toList ++
+          base.productElementNames.toList
+        assertTrue(
+          conn.isRight,
+          fields.nonEmpty,
+          !fields.exists(_.toLowerCase.contains("refresh")),
+          !fields.exists(_.toLowerCase.contains("reset")),
+        )
+      },
     ),
   )

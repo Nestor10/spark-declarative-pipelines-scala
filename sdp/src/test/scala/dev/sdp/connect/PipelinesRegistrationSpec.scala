@@ -151,12 +151,19 @@ object PipelinesRegistrationSpec extends ZIOSpecDefault:
       if commandOf(request) == "CREATE_DATAFLOW_GRAPH" then ZStream.succeed(graphIdResponse(graphId))
       else ZStream.empty
 
-  private def registerOn(m: PipelineManifest, s: Stub, versionCheck: Boolean = true) =
+  private def registerOn(
+      m: PipelineManifest,
+      s: Stub,
+      versionCheck: Boolean = true,
+      dry: Boolean = true,
+      fullRefresh: Boolean = false,
+  ) =
     PipelinesRegistration
       .registerOn(
         manifest = m,
         storage = "file:///tmp/sdp-test",
-        dry = true,
+        dry = dry,
+        fullRefresh = fullRefresh,
         sqlConf = Map.empty,
         defaultCatalog = None,
         defaultDatabase = None,
@@ -353,6 +360,37 @@ object PipelinesRegistrationSpec extends ZIOSpecDefault:
           after.count(_ == "START_RUN") == 1,
           events.map(_.state).toList == List(FlowState.Queued, FlowState.Running, FlowState.Completed),
           events.map(_.flow).toList.forall(_ == Some("silver_flow")),
+        )
+      },
+      test("a full refresh reaches the wire as StartRun.full_refresh_all, and only then") {
+        // The plumb, end to end through the registration sequence: what the
+        // caller asked for is what the SERVER is told. Both runs are driven
+        // through the same stub so the comparison is of bytes, not of intent —
+        // an ordinary run must leave the field off the wire entirely (proto3
+        // presence, so "absent" and "present false" are different messages).
+        def startRun(requests: List[sc.ExecutePlanRequest]) =
+          requests
+            .map(_.getPlan.getCommand.getPipelineCommand)
+            .find(_.hasStartRun)
+            .map(_.getStartRun)
+        val field = sc.PipelineCommand.StartRun.getDescriptor.findFieldByName("full_refresh_all")
+        for
+          plainStub <- stub(happy("graph-1"))
+          plain     <- registerOn(manifest, plainStub, dry = false)
+          _         <- plain.progress.runDrain
+          plainReqs <- plainStub.requests
+          fullStub  <- stub(happy("graph-1"))
+          full      <- registerOn(manifest, fullStub, dry = false, fullRefresh = true)
+          _         <- full.progress.runDrain
+          fullReqs  <- fullStub.requests
+        yield assertTrue(
+          startRun(plainReqs).exists(!_.hasField(field)),
+          startRun(fullReqs).exists(_.getFullRefreshAll),
+          // the rest of the command is untouched — same graph, same storage
+          startRun(fullReqs).map(_.getStorage) == startRun(plainReqs).map(_.getStorage),
+          startRun(fullReqs).map(_.getDataflowGraphId) == startRun(plainReqs).map(_.getDataflowGraphId),
+          // and a full refresh changes nothing about the registration that precedes it
+          plainReqs.map(commandOf) == fullReqs.map(commandOf),
         )
       },
       test("responses that are not events, and events with an empty message, are skipped") {

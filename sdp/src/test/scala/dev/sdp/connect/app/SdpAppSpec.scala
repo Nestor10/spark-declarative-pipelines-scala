@@ -85,6 +85,35 @@ object SdpAppSpec extends ZIOSpecDefault:
             Left(SdpCli.CliError.UnexpectedArg("run", "--drt")),
         )
       },
+      test("run --full-refresh is a real run in full-refresh mode") {
+        assertTrue(
+          SdpCli.parse(List("run", "--full-refresh")) ==
+            Right(SdpCli.Command.Run(dry = false, fullRefresh = true)),
+          // the flag is opt-in: a bare run never asks for one
+          SdpCli.parse(List("run")) == Right(SdpCli.Command.Run(dry = false, fullRefresh = false)),
+          // …and a near-miss is an error, exactly like --dry's
+          SdpCli.parse(List("run", "--full-refresh-all")) ==
+            Left(SdpCli.CliError.UnexpectedArg("run", "--full-refresh-all")),
+          SdpCli.parse(List("run", "--fullrefresh")) ==
+            Left(SdpCli.CliError.UnexpectedArg("run", "--fullrefresh")),
+        )
+      },
+      test("--dry --full-refresh is refused at parse time, in EITHER order") {
+        // A dry full refresh is meaningless, and the refusal must not depend on
+        // which flag the author typed first — so the conflict is checked once,
+        // after the whole argv is understood.
+        val forward  = SdpCli.parse(List("run", "--dry", "--full-refresh"))
+        val backward = SdpCli.parse(List("run", "--full-refresh", "--dry"))
+        assertTrue(
+          forward == backward,
+          forward == Left(
+            SdpCli.CliError.ConflictingFlags("run", SdpCommands.DryFullRefreshRefusal)
+          ),
+          // the rendered line is the shared sentence the sbt plugin also prints
+          forward.swap.exists(_.render.contains("a dry run cannot also be a full refresh")),
+          forward.swap.exists(_.render.startsWith("sdp: run: ")),
+        )
+      },
       test("manifest --out takes a path; a bare --out is a missing value") {
         assertTrue(
           SdpCli.parse(List("manifest")) == Right(SdpCli.Command.Manifest(None)),
@@ -132,6 +161,39 @@ object SdpAppSpec extends ZIOSpecDefault:
           code == ExitCode.failure,
           err.mkString.contains("run: unexpected argument '--dry-run'"),
           out.mkString.contains("Usage:"),
+        )
+      },
+      test("run --dry --full-refresh refuses, prints usage, exits 1 — and never reaches a server") {
+        // No SDP_CONNECT_ENDPOINT is set, so the default sc://localhost:15002
+        // would be attempted if the refusal did not come FIRST. The absence of a
+        // transport failure in the output is therefore the assertion that
+        // matters: nothing was opened, nothing was registered.
+        for
+          code <- TestApp.dispatch(List("run", "--dry", "--full-refresh"))
+          err  <- TestConsole.outputErr
+          out  <- TestConsole.output
+        yield assertTrue(
+          code == ExitCode.failure,
+          err.mkString.contains("sdp: run: a dry run cannot also be a full refresh"),
+          out.mkString.contains("Usage:"),
+          // it is a usage mistake, not a run that failed
+          !err.mkString.contains("registration failed"),
+          !err.mkString.contains("UNAVAILABLE"),
+          !out.mkString.contains("dataflow graph id"),
+        )
+      },
+      test("the dry/full-refresh rule is ONE shared function, and it is the only conflict") {
+        // The sbt plugin's `pushOrRun` calls exactly this; asserting the rule
+        // here (rather than the CLI's rendering of it) is what makes "both
+        // surfaces refuse identically" a property instead of a coincidence.
+        assertTrue(
+          SdpCommands.checkRunMode(dry = true, fullRefresh = true) ==
+            Left(SdpCommands.DryFullRefreshRefusal),
+          SdpCommands.checkRunMode(dry = true, fullRefresh = false) == Right(()),
+          SdpCommands.checkRunMode(dry = false, fullRefresh = true) == Right(()),
+          SdpCommands.checkRunMode(dry = false, fullRefresh = false) == Right(()),
+          // the sentence stands alone: no "sdp:" prefix, since every caller adds its own
+          !SdpCommands.DryFullRefreshRefusal.startsWith("sdp:"),
         )
       },
       test("validate on a sound pipeline exits 0 and prints no error") {

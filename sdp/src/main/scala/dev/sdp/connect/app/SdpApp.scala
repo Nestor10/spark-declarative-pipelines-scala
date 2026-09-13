@@ -21,8 +21,10 @@ import zio.*
   *   - `manifest [--out p]` — validate, then write the `.sdpm` manifest to `p`
   *                            (stdout when `--out` is omitted). Offline.
   *   - `run [--dry]`        — validate, register the graph over Spark Connect,
-  *                            and start a run (`--dry` = server-side validation
-  *                            only). Reads the environment for the endpoint.
+  *     `[--full-refresh]`     and start a run (`--dry` = server-side validation
+  *                            only; `--full-refresh` = reset checkpoints and
+  *                            rebuild every table — the two are mutually
+  *                            exclusive). Reads the environment for the endpoint.
   *   - (no args | --help)   — usage text.
   *
   * The argv is parsed strictly ([[SdpCli]]): an unknown command, an unknown
@@ -169,7 +171,7 @@ trait SdpApp extends ZIOAppDefault:
       case Right(SdpCli.Command.Usage)          => printUsage.as(ExitCode.success)
       case Right(SdpCli.Command.Validate)       => finish(SdpCommands.validate(pipeline))
       case Right(SdpCli.Command.Manifest(out))  => finish(manifestCmd(out))
-      case Right(SdpCli.Command.Run(dry))       => finish(runCmd(dry))
+      case Right(SdpCli.Command.Run(dry, full)) => finish(runCmd(dry, full))
 
   /** `manifest`: render and either write to `out` or print to stdout. */
   private def manifestCmd(out: Option[String]): IO[SdpCommands.CommandError, Unit] =
@@ -186,24 +188,33 @@ trait SdpApp extends ZIOAppDefault:
     }
 
   /** `run`: resolve env config, register + run, report the graph id. The log
-    * line names the transport mode but NEVER the token. */
-  private def runCmd(dry: Boolean): IO[SdpCommands.CommandError, Unit] =
+    * line names the transport mode but NEVER the token.
+    *
+    * A full refresh announces itself in the verb AND in the flag echo: it is
+    * the one mode here that destroys state (checkpoints roll, targets are
+    * rebuilt), so "which mode did this run in?" must be answerable from the
+    * first line of the log, not inferred from the argv someone typed. */
+  private def runCmd(dry: Boolean, fullRefresh: Boolean): IO[SdpCommands.CommandError, Unit] =
     for
       config <- runConfig
-      verb    = if dry then "validating" else "running"
+      verb    = if dry then "validating" else if fullRefresh then "FULL-REFRESHING" else "running"
       mode    = if config.transport.useTls then "tls" else "plaintext"
       auth    = if config.transport.token.isDefined then ", bearer token" else ""
       check   = if config.versionCheck then "" else ", version check SKIPPED"
+      full    = if fullRefresh then ", full-refresh=true" else ""
       _ <- Console
         .printLine(
           s"sdp: $verb pipeline on sc://${config.host}:${config.port} " +
-            s"($mode$auth$check, dry=$dry, storage=${config.storage})"
+            s"($mode$auth$check, dry=$dry$full, storage=${config.storage})"
         )
         .orDie
-      outcome <- SdpCommands.run(pipeline, config, dry)
+      outcome <- SdpCommands.run(pipeline, config, dry, fullRefresh)
       _ <-
         if outcome.completed then
-          val what = if dry then "validated (dry run)" else "executed"
+          val what =
+            if dry then "validated (dry run)"
+            else if fullRefresh then "fully refreshed"
+            else "executed"
           Console.printLine(s"sdp: pipeline $what; dataflow graph id: ${outcome.graphId}").orDie
         else
           Console
@@ -238,7 +249,11 @@ trait SdpApp extends ZIOAppDefault:
            |  manifest [--out p]  Validate, then write the .sdpm manifest to p
            |                      (stdout if --out is omitted). Offline.
            |  run [--dry]         Validate, register the graph over Spark Connect,
-           |                      and start a run. --dry = server-side validation only.
+           |      [--full-refresh] and start a run. --dry = server-side validation only.
+           |                      --full-refresh = rebuild everything: the server rolls
+           |                      each streaming checkpoint to a new numbered sibling and
+           |                      recomputes the targets from their sources. Destructive,
+           |                      and not combinable with --dry.
            |  --help              Show this message.
            |
            |Environment (config is read from the environment — 12factor III):
