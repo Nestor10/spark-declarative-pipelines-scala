@@ -94,6 +94,7 @@ object BehaviorInventory:
   private val VersionGateS   = "dev.sdp.connect.VersionGateSpec"
   private val AutoCdcIT      = "dev.sdp.connect.AutoCdcE2eSpec"
   private val IcebergCdcIT   = "dev.sdp.connect.IcebergAutoCdcE2eSpec"
+  private val FullRefreshIT  = "dev.sdp.connect.FullRefreshE2eSpec"
 
   private def reg(id: String, what: String, anchor: String, coverage: Coverage, m: List[String] = Nil) =
     Behavior(id, Area.Registration, what, anchor, coverage, m)
@@ -269,7 +270,15 @@ object BehaviorInventory:
       Area.FullRefresh,
       "full refresh rolls the streaming checkpoint into a new numbered sibling directory (the old one is left in place) and runs BEFORE materialization",
       "sql/pipelines/.../graph/State.scala → State.reset; sql/pipelines/.../graph/PipelineExecution.scala → PipelineExecution.startPipeline",
-      Coverage.Uncovered("no client surface requests full refresh yet — StartRun carries only dry + storage — so the behavior is unreachable from here"),
+      Coverage.Covered(
+        FullRefreshIT,
+        "two ordinary runs then a StartRun.full_refresh_all run over ONE storage root, with the offset log read " +
+          "back through the server: generation `0` holds batches 0 and 1 (the accrued incremental state) and is " +
+          "STILL THERE afterwards, beside a new generation `1` whose log starts again at batch 0. The roll is " +
+          "therefore measured in both halves — a new numbered sibling, and the old one not deleted. The " +
+          "BEFORE-materialization half is inferred, not observed: what is observed is that the rebuilt target " +
+          "holds exactly the (shrunken) source, which an out-of-order reset could not produce",
+      ),
     ),
     Behavior(
       "FR-3-selection-rules",
@@ -284,7 +293,15 @@ object BehaviorInventory:
       Area.FullRefresh,
       "pipelines.reset.allowed=false behaves differently per mode: an explicit full_refresh_selection errors, while full_refresh_all silently DEMOTES the table to a plain refresh",
       "sql/pipelines/.../graph/State.scala → State.findFlowsToReset; sql/pipelines/.../graph/DatasetManager.scala → DatasetManager.constructFullRefreshSet",
-      Coverage.Uncovered("we neither set the property nor request full refresh; recorded because the silent demotion is a trap"),
+      Coverage.Uncovered(
+        "half of the precondition is now gone — `sdpFullRefresh` DOES request full_refresh_all (FR-2) — but the " +
+          "other half is structural: the property is read from the GRAPH's table spec " +
+          "(DefineOutput.TableDetails.table_properties), which this client deliberately never sends (D13), so " +
+          "there is no surface to set it from and no way to observe the demotion. Setting it in the catalog " +
+          "would not do it: constructFullRefreshSet reads `t.properties` off the graph, not the catalog. Still " +
+          "recorded, and now documented in docs/plugin.md verbatim, because the silent demotion is THE trap: a " +
+          "green run, a completed pipeline, no reset, and no warning anywhere on the wire"
+      ),
       List("pipelines.reset.allowed", "TABLE_NOT_RESETTABLE"),
     ),
 
@@ -380,7 +397,10 @@ object BehaviorInventory:
           "sequence) while the key no wave-2 event mentions keeps its run-1 state. Because an SCD1 merge is " +
           "idempotent, the DATA cannot separate resume from full replay — so the offset log itself is read back: " +
           "batches 0 and 1 under a single checkpoint directory, i.e. run 2 was micro-batch 1 of the same streaming " +
-          "query. Full refresh (the second half of this row) is still unexercised",
+          "query. The FULL-REFRESH half is now measured too, in FullRefreshE2eSpec: the source is shrunk before a " +
+          "full_refresh_all run, the target follows it DOWN (an incremental run can only add rows, so this is " +
+          "truncate + replay), and the auxiliary state table's Iceberg history begins after the previous one's " +
+          "last snapshot — the DROP, observed, not read",
       ),
     ),
     Behavior(

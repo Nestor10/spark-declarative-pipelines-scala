@@ -66,6 +66,7 @@ SDP_INTEGRATION=1 sbt 'sdpIt/Test/runMain dev.sdp.connect.PipelinesRegistrationI
 SDP_INTEGRATION=1 sbt 'sdpIt/Test/runMain dev.sdp.connect.FunctionLibrarySpec'
 SDP_INTEGRATION=1 sbt 'sdpIt/Test/runMain dev.sdp.connect.AutoCdcE2eSpec'    # 4.2.0 image
 SDP_INTEGRATION=1 sbt 'sdpIt/Test/runMain dev.sdp.connect.IcebergAutoCdcE2eSpec'  # 4.2.0 + Iceberg
+SDP_INTEGRATION=1 sbt 'sdpIt/Test/runMain dev.sdp.connect.FullRefreshE2eSpec'     # 4.2.0 + Iceberg
 ```
 
 Each suite starts (and always tears down) a Spark container via the `podman`/`docker` CLI —
