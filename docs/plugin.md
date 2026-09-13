@@ -268,7 +268,8 @@ feed reseeded, a bronze table backfilled with corrected rows, a schema
 expectation that was wrong from the start. An incremental run cannot see any of
 that — the checkpoint says those offsets are done. Before this task the fix was
 to stop everything and `rm -rf` the checkpoint directory under the storage root
-by hand (the sdp-example README still describes that dance); `sdpFullRefresh`
+by hand (the sdp-example README keeps that dance only as a footnote for pins
+older than 0.2.3); `sdpFullRefresh`
 replaces it with one task that also handles truncation and AUTO CDC state, and
 that works against a remote storage root you cannot `rm -rf` at all.
 
