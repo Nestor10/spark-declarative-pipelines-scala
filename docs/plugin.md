@@ -48,6 +48,9 @@ write the pipeline object.
 | `sdpFullRefresh` | task | Register and execute the graph with `StartRun.full_refresh_all` — **the "rebuild everything" button**. The server rolls each streaming checkpoint to a new numbered sibling and recomputes every table from its sources. Destructive; see [Full refresh](#full-refresh--sdpfullrefresh) |
 | `sdpFullRefreshOn <target>` | input task | `sdpFullRefresh` against a named environment (tab-completes the names) |
 | `sdpWatch` | task | Re-trigger the pipeline every `sdpWatchInterval`s (Ctrl-C to stop) — client-side "continuous": each cycle **re-evaluates your pipeline** and is a triggered run whose AvailableNow resumes from the checkpoint and picks up new data (the server has no true continuous mode) |
+| `sdpDumpWire` | task | Write the whole registration sequence to `<target>/sdp/wire/*.txtpb` as protobuf **text format** — the same commands `sdpRun`/`sdpDryRun` send. Offline and deterministic; see [Diagnostics](#diagnostics) |
+| `sdpExplain [flow]` | input task | Ask the server to `EXPLAIN` each flow's relation (`AnalyzePlan`, extended) and print the plan plus one line per in-graph read. Registers nothing, runs nothing. Tab-completes flow names from the last manifest; see [Diagnostics](#diagnostics) |
+| `sdpExplainOn <target> [flow]` | input task | `sdpExplain` against a named environment — the form that matters when two catalogs read the same bytes differently |
 | `sdpSeed` | task | Run `sdpSeedStatements` (DDL/DML) against the server over Spark Connect — a local fixture to create + populate the source/catalog tables an `externalTable` reads, so a full run resolves them |
 | `sdpTargets` | setting | Named environments as typed `SdpTarget` values (`Map[String, SdpTarget]`, default empty) — see [environments.md](environments.md) |
 | `sdpRunOn <target>` | input task | `sdpRun` against a named environment from `sdpTargets` (tab-completes the names) |
@@ -388,6 +391,158 @@ container*, not the plugin):
 - **Build-JVM hygiene.** The child classloader is closed per invocation and the
   ZIO runtime is task-scoped and torn down per invocation — safe for long-lived
   sbt servers. No ZIO runs inside the child loader; evaluation is plain code.
+
+## Diagnostics
+
+`sdpDumpWire` and `sdpExplain` are the two halves of a single question: *what
+did we send, and how did the server read it?*
+
+They exist because the SDP wire is a one-way mirror. The server logs nothing
+about the plans it receives, and `pipelines.proto` has **no graph-readback
+command** — once `CreateDataflowGraph` succeeds, the dataflow graph the server
+built cannot be inspected by any client, ours or the official Python one. So
+when a graph behaves unexpectedly, these two commands are the whole
+observability story.
+
+### `sdpDumpWire` — what we said
+
+```
+sbt sdpDumpWire
+```
+
+writes `<target>/sdp/wire/`:
+
+```
+00-create-dataflow-graph.txtpb
+01-define-output-silver.txtpb
+02-define-output-gold.txtpb
+03-define-flow-silver.txtpb
+04-define-flow-gold.txtpb
+99-start-run.txtpb
+```
+
+Each file is one `spark.connect.PipelineCommand` in protobuf **text format**:
+
+```protobuf
+# sdp wire dump — 03-define-flow-silver.txtpb
+# protobuf text format of one spark.connect.PipelineCommand, exactly as
+# sdpRun/sdpDryRun sends it. The dataflow graph id is server-assigned;
+# it is rendered here as "<dataflow-graph-id>".
+define_flow {
+  dataflow_graph_id: "<dataflow-graph-id>"
+  flow_name: "silver"
+  target_dataset_name: "silver"
+  relation_flow_details {
+    relation {
+      ...
+    }
+  }
+}
+```
+
+Properties worth relying on:
+
+- **Same bytes.** The commands come from the encoder the live registration
+  uses — there is no second rendering path that could drift.
+- **Deterministic.** Equal manifests produce byte-identical files, so `diff`
+  between two dumps means the pipeline changed. The one server-assigned value,
+  the graph id, is a placeholder rather than a fresh UUID.
+- **Round-trips.** `TextFormat.merge` parses any of these files back into the
+  message it came from, so a dump can be replayed, edited or attached to a bug
+  report.
+- The `StartRun` shown is the **dry** one; a real `sdpRun` differs only in
+  `dry`, which proto3 omits when false.
+
+The same thing from the uber jar, no sbt needed: `java -jar app.jar dump-wire
+[--out dir]` (default `./sdp-wire`).
+
+### `sdpExplain` — how the server reads it
+
+```
+sbt sdpExplain                  # every flow
+sbt "sdpExplain gold"           # one flow (tab-completes)
+sbt "sdpExplainOn prod gold"    # against a named environment
+```
+
+`sdpExplain` sends `AnalyzePlan` with `EXPLAIN_MODE_EXTENDED` for each flow's
+relation — the *same relation* the registration would send — and prints the
+server's answer verbatim. Nothing is registered and nothing runs.
+
+Two things to know about what you are looking at:
+
+- It is a **standalone-session analysis**: the catalog resolves names, and there
+  is no pipeline rewrite in front of it. That is deliberate — it shows how this
+  server, with this catalog state, reads our bytes.
+- Consequently, the answer depends on catalog state. Explaining the same
+  pipeline before and after its tables exist gives different output; that
+  difference is often the interesting part.
+
+On a clean catalog, flows that read not-yet-existing tables come back with the
+server's `TABLE_OR_VIEW_NOT_FOUND` message instead of a plan. That is printed as
+information, not as an error: the task still succeeds.
+
+#### Reading the Parsed Logical Plan
+
+`EXTENDED` output has four sections. The first one, `== Parsed Logical Plan ==`,
+is the one these diagnostics care about: it is `SparkConnectPlanner`'s raw decode
+of our bytes, *before* the analyzer resolves anything. The later sections
+(Analyzed / Optimized / Physical) are all fully resolved by definition and say
+nothing about how the plan arrived.
+
+A flow that reads another dataset in the same graph shows up there in one of two
+shapes:
+
+```
+== Parsed Logical Plan ==
+'Project ['id]
++- 'UnresolvedRelation [silver_pe], [], false             <- arrives as a name
+```
+
+```
+== Parsed Logical Plan ==
+Project [id#23, amount#24, 1 AS tag#28]
++- SubqueryAlias spark_catalog.default.silver_pe          <- arrives resolved
+   +- Relation spark_catalog.default.silver_pe[id#23,amount#24] parquet
+```
+
+After the plan, `sdpExplain` prints one line per in-graph read saying which
+shape it found:
+
+```
+--- in-graph reads, as the Parsed Logical Plan above shows them (HEURISTIC) ---
+read 'silver_pe': UnresolvedRelation in Parsed plan
+```
+
+```
+--- in-graph reads, as the Parsed Logical Plan above shows them (HEURISTIC) ---
+read 'silver_pe': already resolved in Parsed plan (Relation)
+note: a read that arrives pre-resolved is not registered as a pipeline
+dependency by Spark 4.2.x — see the upstream issue below
+```
+
+The classification is a **heuristic over Spark's rendered plan text** (plan
+rendering is not an API), which is why it is labelled as one, why it declines to
+guess when it cannot find a read, and why the plan itself is always printed
+above it. External tables are not classified — they live in the catalog by
+definition.
+
+#### The upstream behavior, stated plainly
+
+`SparkConnectPlanner.transformWithColumns`, and a number of sibling transforms,
+analyze their child eagerly while *decoding* the request. Once an in-graph
+upstream table exists in the catalog, a read underneath one of them therefore
+arrives at the pipeline already resolved, carrying no name for the graph to
+recognise — and Spark 4.2.x registers no dependency edge for it. Nothing fails;
+the flows are simply not ordered.
+
+This is an upstream issue, filed against Apache Spark: **SPARK-XXXXX**
+*(placeholder — replace with the issue id once it is assigned)*. This project
+does not work around it: `sdpExplain` reports what the server did so the
+situation is visible, and the fix belongs upstream.
+
+Measured, not inferred: `PlanExplainE2eSpec` runs this experiment against a live
+`apache/spark:4.2.0` — identical bytes, one `CREATE TABLE` in between, and the
+classification flips from `UnresolvedRelation` to `already resolved`.
 
 ## The manifest artifact
 

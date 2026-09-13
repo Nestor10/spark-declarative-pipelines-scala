@@ -111,6 +111,18 @@ object SparkPipelinesPlugin extends AutoPlugin {
         "The server logs nothing about the plans it receives and the proto has no graph-readback " +
         "command, so this plus `sdpExplain` is the whole observability story — see docs/plugin.md."
     )
+    val sdpExplain = inputKey[Unit](
+      "`sdpExplain [flow]` — ask the server to EXPLAIN each flow's relation (AnalyzePlan, extended) " +
+        "and print the plan verbatim, plus one line per in-graph read saying how the Parsed " +
+        "Logical Plan shows it: still an UnresolvedRelation, or already resolved. Name a flow to " +
+        "explain just that one — the names tab-complete from the last sdpManifest. Registers " +
+        "nothing, runs nothing."
+    )
+    val sdpExplainOn = inputKey[Unit](
+      "`sdpExplainOn <target> [flow]` — sdpExplain against a named sdpTargets environment. The " +
+        "server's reading of identical bytes depends on catalog STATE, so this is the form that " +
+        "matters when dev and prod disagree."
+    )
     val sdpValidate = taskKey[Unit](
       "Assemble + validate the pipeline graph and print the verdict — no file output. The offline " +
         "inner-loop target for `~sdpValidate`."
@@ -381,6 +393,31 @@ object SparkPipelinesPlugin extends AutoPlugin {
       )
     },
 
+    // The live half of the diagnostics pair: read back how the server
+    // INTERPRETS what we said. Uncached — it is a network effect, like every
+    // other task that opens a channel.
+    sdpExplain := {
+      val requested = flowNameParser.parsed
+      explainFlows(
+        log = streams.value.log,
+        conv = fileConverter.value,
+        conn = TargetResolution.base(baseConnection.value),
+        manifestRef = sdpManifest.value,
+        flowName = requested,
+      )
+    },
+
+    sdpExplainOn := {
+      val (requested, flow) = targetAndFlowParser.parsed
+      explainFlows(
+        log = streams.value.log,
+        conv = fileConverter.value,
+        conn = resolveTarget(baseConnection.value, sdpTargets.value, requested, "sdpExplainOn"),
+        manifestRef = sdpManifest.value,
+        flowName = flow,
+      )
+    },
+
     // NOT `sdpManifest.value`: a watch that resolved the manifest once would
     // keep re-triggering the pipeline the author had when they pressed enter,
     // silently ignoring every edit since. It takes the same two inputs the
@@ -608,6 +645,48 @@ object SparkPipelinesPlugin extends AutoPlugin {
       Space ~> token(StringBasic.examples(names*), "<target>")
     }
 
+  /** The optional `[flow]` argument of `sdpExplain`, TAB-completing over the
+    * flow names in the manifest this project last wrote.
+    *
+    * The completions come from a FILE, not from a task: a parser runs before
+    * the task graph does, so it cannot ask `sdpManifest` for anything. Reading
+    * `<target>/sdp/pipeline.sdpm` when it happens to be there is the honest
+    * approximation — completions are a convenience, and the task validates the
+    * name it is actually given (`PlanExplain.checkFlowName`) regardless of what
+    * the parser suggested. No manifest yet = no completions, never an error.
+    */
+  private lazy val flowNameParser
+      : Def.Initialize[sbt.State => sbt.internal.util.complete.Parser[Option[String]]] =
+    Def.setting { (_: sbt.State) =>
+      import sbt.internal.util.complete.DefaultParsers.*
+      val names = knownFlowNames((Compile / target).value.toPath)
+      (Space ~> token(StringBasic.examples(names*), "<flow>")).?
+    }
+
+  /** `<target> [flow]` for `sdpExplainOn`: the target completes over
+    * `sdpTargets` (as everywhere else), the flow over the last manifest. */
+  private lazy val targetAndFlowParser
+      : Def.Initialize[sbt.State => sbt.internal.util.complete.Parser[(String, Option[String])]] =
+    Def.setting { (_: sbt.State) =>
+      import sbt.internal.util.complete.DefaultParsers.*
+      val targets = sdpTargets.value.keys.toList.sorted
+      val flows   = knownFlowNames((Compile / target).value.toPath)
+      (Space ~> token(StringBasic.examples(targets*), "<target>")) ~
+        (Space ~> token(StringBasic.examples(flows*), "<flow>")).?
+    }
+
+  /** Flow names from the manifest on disk, or nothing. Best-effort by design:
+    * a stale, unreadable or absent manifest costs a completion, never a task. */
+  private def knownFlowNames(targetDir: Path): List[String] =
+    val manifest = targetDir.resolve("sdp").resolve("pipeline.sdpm")
+    if !Files.isRegularFile(manifest) then Nil
+    else
+      try
+        dev.sdp.core.PipelineManifest
+          .parse(new String(Files.readAllBytes(manifest), UTF_8))
+          .fold(_ => Nil, dev.sdp.connect.PlanExplain.flowNames)
+      catch case _: java.io.IOException => Nil
+
   /** Resolve `<target>` against `sdpTargets`, failing the task with the whole
     * rendered message when it cannot (unknown name, empty map, invalid target,
     * missing token variable). Environment access happens HERE — task time. */
@@ -793,6 +872,61 @@ object SparkPipelinesPlugin extends AutoPlugin {
           else if fullRefresh then "fully refreshed"
           else "executed"
         log.info(s"sdp: pipeline $mode on the server; dataflow graph id: $graphId")
+
+  /** THE shared body for `sdpExplain` and `sdpExplainOn` — ask the server how
+    * it reads each flow's relation and print the answer.
+    *
+    * Same one-`ResolvedConnection`-in shape as [[pushOrRun]], and the same
+    * reason: a target contributes the connection and nothing else, so
+    * `sdpExplainOn dev` and `sdpExplain` explain identical bytes and any
+    * difference in the output is a difference in the SERVER — which is the
+    * entire point of the task.
+    *
+    * The exit rule mirrors the library's: the server declining to analyze one
+    * flow (a table that does not exist yet) is reported inside the report and
+    * the task SUCCEEDS; only a transport failure fails the build. A diagnostic
+    * that fails the build when it finds something is a diagnostic people stop
+    * running.
+    */
+  private def explainFlows(
+      log: sbt.util.Logger,
+      conv: xsbti.FileConverter,
+      conn: ResolvedConnection,
+      manifestRef: HashedVirtualFileRef,
+      flowName: Option[String],
+  ): Unit =
+    val manifest = readManifest(conv, manifestRef)
+    dev.sdp.connect.PlanExplain
+      .checkFlowName(manifest, flowName)
+      .left
+      .foreach(message => sys.error(s"sdp: $message"))
+
+    val (host, port) = parseEndpoint(conn.endpoint)
+    log.info(
+      s"sdp: explaining ${flowName.fold("every flow")(f => s"flow '$f'")} on ${conn.endpoint} " +
+        s"(${conn.origin})"
+    )
+
+    SdpZioBridge.run(
+      dev.sdp.connect.PlanExplain.explain(
+        host,
+        port,
+        manifest,
+        flowName,
+        // Extended is the mode that carries the Parsed Logical Plan — the
+        // section the dependency-edge classification reads. The uber jar's
+        // `explain --formatted` covers the "what will it DO" question.
+        dev.sdp.connect.PlanAnalysis.ExplainMode.Extended,
+        defaultCatalog = conn.defaultCatalog,
+        defaultDatabase = conn.defaultDatabase,
+        transport = conn.transport,
+        versionCheck = conn.versionCheck,
+      )
+    ) match
+      case Left(err) =>
+        sys.error(s"sdp: explain failed on ${conn.endpoint} (${conn.origin}) — ${err.describe}")
+      case Right(report) =>
+        dev.sdp.connect.PlanExplain.render(report).foreach(line => log.info(s"sdp: $line"))
 
   /** THE registration-and-drain effect, shared by [[pushOrRun]] and every
     * [[watchLoop]] cycle (E's one-body rule, extended rather than re-forked).

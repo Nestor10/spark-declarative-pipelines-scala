@@ -5,6 +5,7 @@ val pluginVersion = sys.props.getOrElse("plugin.version", sys.error("plugin.vers
 val checkManifest            = taskKey[Unit]("Assert the generated manifest content")
 val checkManifestAfterDelete = taskKey[Unit]("Assert silver is gone after its source was deleted")
 val checkSchemas             = taskKey[Unit]("Assert the generated named-tuple schema aliases")
+val checkWireDump            = taskKey[Unit]("Assert the prototext wire dump's layout and content")
 
 lazy val root = (project in file("."))
   .enablePlugins(dev.sdp.plugin.SparkPipelinesPlugin)
@@ -41,6 +42,49 @@ lazy val root = (project in file("."))
         s"expected inferred Rates alias, got:\n$content",
       )
       assert(content.contains("package sdp.schemas"), s"missing package, got:\n$content")
+    },
+
+    // The wire dump lands as a real directory of prototext files in a real
+    // consumer build — the layout (numbering, one file per command) and the
+    // graph-id placeholder are what a reader depends on.
+    checkWireDump := {
+      val dir = (Compile / target).value.toPath.resolve("sdp").resolve("wire")
+      assert(Files.isDirectory(dir), s"expected a wire dump directory at $dir")
+      val stream = Files.list(dir)
+      val names =
+        try {
+          val it = stream.iterator()
+          val b  = List.newBuilder[String]
+          while (it.hasNext) b += it.next().getFileName.toString
+          b.result().sorted
+        } finally stream.close()
+
+      def has(name: String): Unit =
+        assert(names.contains(name), s"expected $name in the wire dump, got: $names")
+
+      has("00-create-dataflow-graph.txtpb")
+      has("99-start-run.txtpb")
+      assert(
+        names.exists(_.endsWith("define-flow-silver_orders.txtpb")),
+        s"expected a DefineFlow file for silver_orders, got: $names",
+      )
+      assert(
+        names.exists(_.endsWith("define-output-bronze_orders.txtpb")),
+        s"expected a DefineOutput file for bronze_orders, got: $names",
+      )
+      assert(names.forall(_.endsWith(".txtpb")), s"unexpected files in the dump: $names")
+
+      val flowFile = names.find(_.endsWith("define-flow-silver_orders.txtpb")).get
+      val flow     = new String(Files.readAllBytes(dir.resolve(flowFile)), "UTF-8")
+      assert(flow.contains("define_flow {"), s"expected prototext DefineFlow, got:\n$flow")
+      assert(
+        flow.contains("flow_name: \"silver_orders\""),
+        s"expected the flow name in the prototext, got:\n$flow",
+      )
+      assert(
+        flow.contains("<dataflow-graph-id>"),
+        s"the server-assigned graph id must render as a placeholder, got:\n$flow",
+      )
     },
 
     checkManifestAfterDelete := {

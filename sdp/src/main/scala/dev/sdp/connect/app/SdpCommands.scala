@@ -1,7 +1,7 @@
 package dev.sdp.connect.app
 
 import dev.sdp.app.{GraphValidation, ManifestAssembly}
-import dev.sdp.connect.{PipelinesRegistration, TransportConfig, WireDump}
+import dev.sdp.connect.{PipelinesRegistration, PlanAnalysis, PlanExplain, TransportConfig, WireDump}
 import dev.sdp.core.{GraphFragment, PipelineManifest, PipelineValidationError}
 import zio.*
 
@@ -174,6 +174,42 @@ object SdpCommands:
       options: WireDump.Options,
   ): IO[CommandError, List[WireDump.Entry]] =
     assemble(pipeline).map(WireDump.entries(_, options))
+
+  /** `explain`: validate, then ask the SERVER how it reads each flow's
+    * relation ([[dev.sdp.connect.PlanExplain]]).
+    *
+    * Live, and the only live command that is not a run: it registers nothing,
+    * starts nothing, and a per-flow rejection is carried in the report rather
+    * than failing — an `AnalysisException` on a clean catalog is the diagnosis,
+    * not a defect. Only a transport failure lands in the error channel.
+    *
+    * An unknown flow name is refused offline, before a channel is opened.
+    */
+  def explain(
+      pipeline: List[GraphFragment],
+      config: RunConfig,
+      flowName: Option[String],
+      mode: PlanAnalysis.ExplainMode,
+  ): IO[CommandError, PlanExplain.Report] =
+    for
+      manifest <- assemble(pipeline)
+      _ <- ZIO
+        .fromEither(PlanExplain.checkFlowName(manifest, flowName))
+        .mapError(CommandError.BadConfig(_))
+      report <- PlanExplain
+        .explain(
+          config.host,
+          config.port,
+          manifest,
+          flowName,
+          mode,
+          defaultCatalog = config.defaultCatalog,
+          defaultDatabase = config.defaultDatabase,
+          transport = config.transport,
+          versionCheck = config.versionCheck,
+        )
+        .mapError(CommandError.Registration(_))
+    yield report
 
   /** The outcome of a run: the graph id, and whether the run actually finished
     * (false = the drain lost the race against the timeout and we detached; the

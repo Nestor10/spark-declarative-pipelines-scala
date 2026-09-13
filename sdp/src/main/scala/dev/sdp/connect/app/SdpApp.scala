@@ -23,6 +23,10 @@ import zio.*
   *   - `dump-wire [--out d]` — validate, then write the full Spark Connect
   *                            registration sequence as protobuf text format
   *                            (`WireDump`). Offline, deterministic, diffable.
+  *   - `explain [flow]`     — ask the server how it READS each flow's relation
+  *     `[--formatted]`        (`PlanExplain`), and classify every in-graph read
+  *                            as UnresolvedRelation vs pre-resolved. Live, but
+  *                            registers nothing and runs nothing.
   *   - `run [--dry]`        — validate, register the graph over Spark Connect,
   *     `[--full-refresh]`     and start a run (`--dry` = server-side validation
   *                            only; `--full-refresh` = reset checkpoints and
@@ -179,6 +183,7 @@ trait SdpApp extends ZIOAppDefault:
       case Right(SdpCli.Command.Validate)       => finish(SdpCommands.validate(pipeline))
       case Right(SdpCli.Command.Manifest(out))  => finish(manifestCmd(out))
       case Right(SdpCli.Command.DumpWire(out))  => finish(dumpWireCmd(out))
+      case Right(SdpCli.Command.Explain(flow, formatted)) => finish(explainCmd(flow, formatted))
       case Right(SdpCli.Command.Run(dry, full)) => finish(runCmd(dry, full))
 
   /** `manifest`: render and either write to `out` or print to stdout. */
@@ -224,6 +229,28 @@ trait SdpApp extends ZIOAppDefault:
             s"is server-assigned and rendered as ${dev.sdp.connect.WireDump.GraphIdPlaceholder})"
         )
         .orDie
+    yield ()
+
+  /** `explain`: ask the server how it reads each flow's relation, and print the
+    * plan plus the dependency-edge classification.
+    *
+    * Exits 0 whenever the server ANSWERED, including when its answer was "that
+    * table does not exist" — on a clean catalog that is the expected reply and
+    * the diagnosis at once. A transport failure still exits 1.
+    */
+  private def explainCmd(
+      flowName: Option[String],
+      formatted: Boolean,
+  ): IO[SdpCommands.CommandError, Unit] =
+    val mode =
+      if formatted then dev.sdp.connect.PlanAnalysis.ExplainMode.Formatted
+      else dev.sdp.connect.PlanAnalysis.ExplainMode.Extended
+    for
+      config <- runConfig
+      report <- SdpCommands.explain(pipeline, config, flowName, mode)
+      _ <- ZIO.foreachDiscard(dev.sdp.connect.PlanExplain.render(report))(line =>
+        Console.printLine(s"sdp: $line").orDie
+      )
     yield ()
 
   /** `run`: resolve env config, register + run, report the graph id. The log
@@ -293,6 +320,12 @@ trait SdpApp extends ZIOAppDefault:
            |                      deterministic — the same bytes `run` sends, with the
            |                      server-assigned graph id as a placeholder and the
            |                      dry StartRun. Diffable, and attachable to a bug report.
+           |  explain [flow]      Ask the server to EXPLAIN each flow's relation
+           |      [--formatted]    (AnalyzePlan, extended by default) and print the plan
+           |                      plus one dependency-edge classification line per
+           |                      in-graph read. Registers nothing and runs nothing;
+           |                      a "table not found" answer is informative, not a
+           |                      failure. Reads the environment for the endpoint.
            |  run [--dry]         Validate, register the graph over Spark Connect,
            |      [--full-refresh] and start a run. --dry = server-side validation only.
            |                      --full-refresh = rebuild everything: the server rolls

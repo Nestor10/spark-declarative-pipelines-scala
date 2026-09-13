@@ -228,8 +228,13 @@ object PipelinesRegistration:
     *     transport problem is about to be reported much better by the next RPC.
     *
     * `versionCheck = false` skips the round trip entirely and says so.
+    *
+    * `private[connect]` because [[PlanExplain]] runs the SAME handshake before
+    * its first `AnalyzePlan`: "which server is this, and is it new enough" must
+    * be answered identically by every live entry point, or two tasks pointed at
+    * the same endpoint can disagree about what they are talking to.
     */
-  private def handshake(
+  private[connect] def handshake(
       transport: ConnectTransport,
       sessionId: String,
       manifest: PipelineManifest,

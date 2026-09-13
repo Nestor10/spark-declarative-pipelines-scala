@@ -24,6 +24,10 @@ object SdpCli:
       * text format. Offline and deterministic (see `WireDump`). */
     case DumpWire(out: Option[String])
 
+    /** `explain [flow] [--formatted]` — ask the server to explain each flow's
+      * relation. LIVE (see `PlanExplain`). */
+    case Explain(flowName: Option[String], formatted: Boolean)
+
   /** Everything an argv can get wrong, rendered as one readable line. The
     * caller prints the usage text after it. */
   enum CliError:
@@ -51,8 +55,25 @@ object SdpCli:
       case "validate" :: rest        => noExtras("validate", rest, Command.Validate)
       case "manifest" :: rest        => outArgs("manifest", rest, None, Command.Manifest(_))
       case "dump-wire" :: rest       => outArgs("dump-wire", rest, None, Command.DumpWire(_))
+      case "explain" :: rest         => explainArgs(rest, None, formatted = false)
       case "run" :: rest             => runArgs(rest, dry = false, fullRefresh = false)
       case token :: _                => Left(CliError.UnknownCommand(token))
+
+  /** `explain [<flow>] [--formatted]` — at most one flow name, and the one
+    * flag. A bare `explain` explains every flow. A second positional token is
+    * an error rather than a silently ignored typo: "explain gold silver" must
+    * not quietly explain only `gold`. */
+  private def explainArgs(
+      args: List[String],
+      flowName: Option[String],
+      formatted: Boolean,
+  ): Either[CliError, Command] =
+    args match
+      case Nil                       => Right(Command.Explain(flowName, formatted))
+      case "--formatted" :: rest     => explainArgs(rest, flowName, formatted = true)
+      case token :: rest if !token.startsWith("-") && flowName.isEmpty =>
+        explainArgs(rest, Some(token), formatted)
+      case token :: _ => Left(CliError.UnexpectedArg("explain", token))
 
   /** `<command> [--out <path> | -o <path>]` — nothing else. Shared by
     * `manifest` (a file) and `dump-wire` (a directory): both take exactly one

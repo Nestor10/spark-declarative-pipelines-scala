@@ -95,7 +95,14 @@ then a real run:
 sbt ~sdpValidate      # assemble + validate the graph; no server, no files
 sbt sdpDryRun         # register server-side in validate-only mode
 sbt sdpRun            # register and execute — materializes tables
+sbt sdpExplain        # ask the server how it reads each flow's plan (nothing runs)
 ```
+
+- **You can see both ends of the wire.** `sdpDumpWire` writes the exact
+  registration sequence as protobuf text format (offline, deterministic,
+  diffable); `sdpExplain` prints the server's own `EXPLAIN` of each flow. The
+  SDP protocol offers no way to read a registered graph back, so these two are
+  the observability story — see [Diagnostics](docs/plugin.md#diagnostics).
 
 And the outer loop — name your environments once, then address them:
 

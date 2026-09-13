@@ -140,6 +140,27 @@ object SdpAppSpec extends ZIOSpecDefault:
             Left(SdpCli.CliError.UnexpectedArg("dump-wire", "--pretty")),
         )
       },
+      test("explain takes an optional flow name and --formatted, in either order") {
+        assertTrue(
+          SdpCli.parse(List("explain")) == Right(SdpCli.Command.Explain(None, formatted = false)),
+          SdpCli.parse(List("explain", "gold")) ==
+            Right(SdpCli.Command.Explain(Some("gold"), formatted = false)),
+          SdpCli.parse(List("explain", "--formatted")) ==
+            Right(SdpCli.Command.Explain(None, formatted = true)),
+          SdpCli.parse(List("explain", "gold", "--formatted")) ==
+            Right(SdpCli.Command.Explain(Some("gold"), formatted = true)),
+          SdpCli.parse(List("explain", "--formatted", "gold")) ==
+            Right(SdpCli.Command.Explain(Some("gold"), formatted = true)),
+        )
+      },
+      test("explain rejects a second flow name rather than silently explaining one") {
+        assertTrue(
+          SdpCli.parse(List("explain", "gold", "silver")) ==
+            Left(SdpCli.CliError.UnexpectedArg("explain", "silver")),
+          SdpCli.parse(List("explain", "--format")) ==
+            Left(SdpCli.CliError.UnexpectedArg("explain", "--format")),
+        )
+      },
       test("validate takes no arguments") {
         assertTrue(
           SdpCli.parse(List("validate")) == Right(SdpCli.Command.Validate),

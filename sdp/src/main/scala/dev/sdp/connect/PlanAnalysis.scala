@@ -20,6 +20,28 @@ object PlanAnalysis:
   /** A field of the analyzed schema: name and protobuf type-kind. */
   final case class SchemaField(name: String, kind: String)
 
+  /** Which `AnalyzePlanRequest.Explain.ExplainMode` to ask for.
+    *
+    * Two of the proto's five, on purpose. `EXTENDED` is the one that carries
+    * the **Parsed Logical Plan** section — the planner's raw decode of our
+    * bytes, before catalog resolution — which is the only section that answers
+    * "how does the server read what we sent?" (see [[PlanDiagnostics]]).
+    * `FORMATTED` is the readable physical plan, for when the question is what
+    * the query will actually *do*. `SIMPLE` is a subset of both, and
+    * `CODEGEN`/`COST` answer performance questions this tool does not ask; a
+    * mode nobody here has a use for is a surface we would have to keep.
+    */
+  enum ExplainMode(private[connect] val proto: sc.AnalyzePlanRequest.Explain.ExplainMode):
+    case Extended
+        extends ExplainMode(sc.AnalyzePlanRequest.Explain.ExplainMode.EXPLAIN_MODE_EXTENDED)
+    case Formatted
+        extends ExplainMode(sc.AnalyzePlanRequest.Explain.ExplainMode.EXPLAIN_MODE_FORMATTED)
+
+    /** The mode's name as a user reads it in a header line. */
+    def label: String = this match
+      case Extended  => "extended"
+      case Formatted => "formatted"
+
   /** Ask the server what Spark it is, on a channel the caller already owns.
     *
     * `AnalyzePlanRequest.SparkVersion` is the cheapest round trip Spark Connect
@@ -78,6 +100,54 @@ object PlanAnalysis:
         .mapError(analysisError)
     }
 
+  /** Ask the analyzer to EXPLAIN a relation — the wire-INTERPRETATION probe.
+    *
+    * `AnalyzePlan`/`Explain` hands back the planner's own rendering of the plan
+    * it decoded from our bytes. Under [[ExplainMode.Extended]] that includes the
+    * *Parsed Logical Plan*: `SparkConnectPlanner`'s raw decode, before the
+    * analyzer resolves anything. That section is the only user-visible answer to
+    * "how does this server read what we send" — which matters because the
+    * reading is not a function of the bytes alone: an in-graph table that
+    * already exists in the catalog can arrive PRE-RESOLVED, and the pipeline
+    * then never sees a read to register a dependency on (see [[PlanDiagnostics]]).
+    *
+    * Caveat, by design: this is a STANDALONE-session analysis. There is no
+    * pipeline rewrite in front of it and catalog resolution is active, so it
+    * shows how the server reads the relation, not what the pipeline's own
+    * analysis will do with it. That is exactly why the fresh-vs-re-run diff is
+    * informative: identical bytes, different catalog, different reading.
+    *
+    * Deadlined like every other unary RPC here — the transport applies
+    * [[TransportConfig.deadlineSeconds]], so a wedged server cannot hang a build.
+    *
+    * @param sessionId the caller's session, so an explain shares the session
+    *                  with the handshake that preceded it (a different session
+    *                  is a different server-side state, hence a different answer)
+    */
+  private[connect] def explainOn(
+      relation: sc.Relation,
+      mode: ExplainMode,
+      sessionId: String,
+  ): ZIO[ConnectTransport, RegistrationError, String] =
+    ZIO.serviceWithZIO[ConnectTransport] { transport =>
+      transport
+        .analyze(
+          sc.AnalyzePlanRequest
+            .newBuilder()
+            .setSessionId(sessionId)
+            .setUserContext(sc.UserContext.newBuilder().setUserId("sbt-spark-pipelines"))
+            .setExplain(
+              sc.AnalyzePlanRequest.Explain
+                .newBuilder()
+                .setPlan(sc.Plan.newBuilder().setRoot(relation))
+                .setExplainMode(mode.proto)
+            )
+            .build()
+        )
+        .map(_.getExplain.getExplainString)
+        .mapError(analysisError)
+    }
+
   /** The (host, port) entry point every call site already uses. A thin
     * forwarder: build the live transport, run [[analyzeSchemaOn]] on it. The
     * whole interaction fits inside this effect, so the LAYER form is the right
@@ -92,8 +162,19 @@ object PlanAnalysis:
     analyzeSchemaOn(relation).provide(ConnectTransport.live(host, port, transport))
 
   /** Shared failure mapping for every `AnalyzePlan` call here: a gRPC status is
-    * the server's verdict, anything else is transport. */
+    * the server's verdict, anything else is transport.
+    *
+    * With one carve-out, the same one `PipelinesRegistration.grpcError` makes:
+    * `UNAVAILABLE` means we never reached a server, so it is TRANSPORT, not a
+    * verdict. The distinction used to be cosmetic here; it stopped being
+    * cosmetic when [[PlanExplain]] started treating a server verdict as
+    * information (a table that does not exist yet is an answer) while still
+    * failing on transport — without this, a server that is simply down would
+    * be reported as a perfectly informative "the server declined to analyze".
+    */
   private def analysisError(cause: Throwable): RegistrationError = cause match
+    case e: StatusRuntimeException if e.getStatus.getCode == io.grpc.Status.Code.UNAVAILABLE =>
+      RegistrationError.TransportFailure(s"server unreachable: ${e.getStatus.getDescription}")
     case e: StatusRuntimeException =>
       RegistrationError.ServerRejected(s"${e.getStatus.getCode}: ${e.getStatus.getDescription}")
     case other => RegistrationError.TransportFailure(other.toString)

@@ -8,6 +8,10 @@
 > checkSchemas
 > compile
 
+# Plan diagnostics, offline half: the registration sequence as prototext.
+> sdpDumpWire
+> checkWireDump
+
 # Incremental correctness (D10 / classload-eval): dropping a dataset from the
 # pipeline must drop its fragments from the next manifest WITHOUT a clean. The
 # author removes Silver.orders from the pipeline list and deletes its source;
