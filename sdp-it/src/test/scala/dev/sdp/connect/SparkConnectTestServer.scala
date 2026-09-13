@@ -65,6 +65,38 @@ object SparkConnectTestServer:
   /** Mount point for [[CacheDir]] inside the container. */
   private val JarMount = "/opt/sdp-jars"
 
+  /** Replace jars the distribution already ships, by bind-mounting a host file
+    * OVER the container path — `SDP_SPARK_JAR_OVERRIDES=host:container[,…]`.
+    *
+    * This is how a LOCALLY BUILT server jar gets tested against a gated suite
+    * without rebuilding an image: point it at
+    * `/opt/spark/jars/spark-connect_2.13-<v>.jar` and the stock image runs with
+    * one class replaced. Distinct from [[ServerJar]], which ADDS a jar the
+    * distribution lacks via `--jars`; an override has to be a mount, because
+    * `--jars` cannot displace something already on the server's classpath.
+    *
+    * Env rather than a [[Flavor]] field on purpose: it is an investigation tool
+    * for an unreleased or patched Spark, never a property of a suite — no suite
+    * may depend on it being set, and a green run must not require it. The split
+    * is on the LAST colon, so a Windows-ish or port-ish host path still parses. */
+  private val JarOverridesEnv = "SDP_SPARK_JAR_OVERRIDES"
+
+  private def jarOverrideMounts: List[String] =
+    sys.env
+      .getOrElse(JarOverridesEnv, "")
+      .split(',')
+      .toList
+      .map(_.trim)
+      .filter(_.nonEmpty)
+      .flatMap { spec =>
+        val cut = spec.lastIndexOf(':')
+        require(
+          cut > 0 && cut < spec.length - 1,
+          s"$JarOverridesEnv entry must be host:container, got '$spec'",
+        )
+        List("-v", s"${spec.substring(0, cut)}:${spec.substring(cut + 1)}:ro")
+      }
+
   /** The conformance-oracle pin: everything that only needs *analysis* runs
     * here, and the drift-gated inventory is rendered against this era. */
   val DefaultImage = "docker.io/apache/spark:4.1.2"
@@ -155,7 +187,7 @@ object SparkConnectTestServer:
             cli, "run", "-d", "--name", name,
             "-p", "127.0.0.1::15002", // random host port, loopback only
             "-e", "SPARK_NO_DAEMONIZE=1",
-          ) ++ mount ++ List(
+          ) ++ mount ++ jarOverrideMounts ++ List(
             flavor.image,
             "/opt/spark/sbin/start-connect-server.sh",
           ) ++ jarArgs ++ confArgs
