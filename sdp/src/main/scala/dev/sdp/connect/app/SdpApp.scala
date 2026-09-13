@@ -20,6 +20,9 @@ import zio.*
   *                            Offline (no env, no server).
   *   - `manifest [--out p]` — validate, then write the `.sdpm` manifest to `p`
   *                            (stdout when `--out` is omitted). Offline.
+  *   - `dump-wire [--out d]` — validate, then write the full Spark Connect
+  *                            registration sequence as protobuf text format
+  *                            (`WireDump`). Offline, deterministic, diffable.
   *   - `run [--dry]`        — validate, register the graph over Spark Connect,
   *     `[--full-refresh]`     and start a run (`--dry` = server-side validation
   *                            only; `--full-refresh` = reset checkpoints and
@@ -101,6 +104,10 @@ trait SdpApp extends ZIOAppDefault:
 
   private val DefaultEndpoint = "sc://localhost:15002"
 
+  /** Where `dump-wire` writes when `--out` is omitted. Relative to the working
+    * directory, because an uber jar in a container has no `target/`. */
+  private val DefaultWireDir = "sdp-wire"
+
   /** Resolve the effective pipeline name (env override > [[name]]). */
   private val effectiveName: UIO[String] =
     env(NameVar).map(_.filter(_.nonEmpty).getOrElse(name))
@@ -171,6 +178,7 @@ trait SdpApp extends ZIOAppDefault:
       case Right(SdpCli.Command.Usage)          => printUsage.as(ExitCode.success)
       case Right(SdpCli.Command.Validate)       => finish(SdpCommands.validate(pipeline))
       case Right(SdpCli.Command.Manifest(out))  => finish(manifestCmd(out))
+      case Right(SdpCli.Command.DumpWire(out))  => finish(dumpWireCmd(out))
       case Right(SdpCli.Command.Run(dry, full)) => finish(runCmd(dry, full))
 
   /** `manifest`: render and either write to `out` or print to stdout. */
@@ -186,6 +194,37 @@ trait SdpApp extends ZIOAppDefault:
         case None =>
           Console.printLine(text).orDie
     }
+
+  /** `dump-wire`: write the registration sequence as protobuf text format.
+    *
+    * The graph defaults and storage root come from the SAME environment `run`
+    * reads, because the point of the dump is that it is the bytes this
+    * deployment would actually send — a dump built from different
+    * configuration would be a different pipeline's evidence. Nothing here
+    * opens a channel: `SDP_CONNECT_ENDPOINT` is only parsed (so a malformed one
+    * is still reported), never dialled.
+    */
+  private def dumpWireCmd(out: Option[String]): IO[SdpCommands.CommandError, Unit] =
+    for
+      config <- runConfig
+      dump <- SdpCommands.dumpWire(
+        pipeline,
+        dev.sdp.connect.WireDump.Options(
+          defaultCatalog = config.defaultCatalog,
+          defaultDatabase = config.defaultDatabase,
+          storage = config.storage,
+          dry = true,
+        ),
+      )
+      dir = Paths.get(out.getOrElse(DefaultWireDir))
+      _ <- ZIO.attemptBlocking(dev.sdp.connect.WireDump.writeTo(dir, dump)).orDie
+      _ <- Console
+        .printLine(
+          s"sdp: wrote ${dump.size} wire command(s) to $dir (protobuf text format; the graph id " +
+            s"is server-assigned and rendered as ${dev.sdp.connect.WireDump.GraphIdPlaceholder})"
+        )
+        .orDie
+    yield ()
 
   /** `run`: resolve env config, register + run, report the graph id. The log
     * line names the transport mode but NEVER the token.
@@ -248,6 +287,12 @@ trait SdpApp extends ZIOAppDefault:
            |  validate            Assemble and validate the pipeline graph. Offline.
            |  manifest [--out p]  Validate, then write the .sdpm manifest to p
            |                      (stdout if --out is omitted). Offline.
+           |  dump-wire [--out d] Validate, then write the whole Spark Connect
+           |                      registration sequence to directory d as protobuf
+           |                      text format (default $DefaultWireDir). Offline and
+           |                      deterministic — the same bytes `run` sends, with the
+           |                      server-assigned graph id as a placeholder and the
+           |                      dry StartRun. Diffable, and attachable to a bug report.
            |  run [--dry]         Validate, register the graph over Spark Connect,
            |      [--full-refresh] and start a run. --dry = server-side validation only.
            |                      --full-refresh = rebuild everything: the server rolls

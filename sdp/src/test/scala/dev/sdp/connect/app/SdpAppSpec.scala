@@ -125,6 +125,21 @@ object SdpAppSpec extends ZIOSpecDefault:
             Left(SdpCli.CliError.UnexpectedArg("manifest", "--quiet")),
         )
       },
+      test("dump-wire --out takes a directory, and rejects everything else") {
+        assertTrue(
+          SdpCli.parse(List("dump-wire")) == Right(SdpCli.Command.DumpWire(None)),
+          SdpCli.parse(List("dump-wire", "--out", "build/wire")) ==
+            Right(SdpCli.Command.DumpWire(Some("build/wire"))),
+          SdpCli.parse(List("dump-wire", "-o", "build/wire")) ==
+            Right(SdpCli.Command.DumpWire(Some("build/wire"))),
+          SdpCli.parse(List("dump-wire", "--out")) ==
+            Left(SdpCli.CliError.MissingValue("dump-wire", "--out")),
+          // a near-miss of the COMMAND is an unknown command, not a silent dump
+          SdpCli.parse(List("dumpwire")) == Left(SdpCli.CliError.UnknownCommand("dumpwire")),
+          SdpCli.parse(List("dump-wire", "--pretty")) ==
+            Left(SdpCli.CliError.UnexpectedArg("dump-wire", "--pretty")),
+        )
+      },
       test("validate takes no arguments") {
         assertTrue(
           SdpCli.parse(List("validate")) == Right(SdpCli.Command.Validate),

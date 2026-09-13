@@ -1,7 +1,7 @@
 package dev.sdp.connect.app
 
 import dev.sdp.app.{GraphValidation, ManifestAssembly}
-import dev.sdp.connect.{PipelinesRegistration, TransportConfig}
+import dev.sdp.connect.{PipelinesRegistration, TransportConfig, WireDump}
 import dev.sdp.core.{GraphFragment, PipelineManifest, PipelineValidationError}
 import zio.*
 
@@ -157,6 +157,23 @@ object SdpCommands:
     * the caller decides whether to print it or write a file. */
   def manifest(pipeline: List[GraphFragment]): IO[CommandError, String] =
     assemble(pipeline).map(_.render)
+
+  /** `dump-wire`: validate, then render the whole Spark Connect registration
+    * sequence as protobuf text format.
+    *
+    * Offline and deterministic — [[dev.sdp.connect.WireDump]] reuses the very
+    * encoder the live registration uses and renders the server-assigned graph
+    * id as a placeholder, so two dumps of the same pipeline are byte-identical.
+    * The caller decides where the files land.
+    *
+    * The `StartRun` in the dump is the DRY one (`dry: true`); a real run's
+    * `StartRun` differs only in that field, which proto3 omits when false.
+    */
+  def dumpWire(
+      pipeline: List[GraphFragment],
+      options: WireDump.Options,
+  ): IO[CommandError, List[WireDump.Entry]] =
+    assemble(pipeline).map(WireDump.entries(_, options))
 
   /** The outcome of a run: the graph id, and whether the run actually finished
     * (false = the drain lost the race against the timeout and we detached; the

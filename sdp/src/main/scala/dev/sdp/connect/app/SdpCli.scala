@@ -20,6 +20,10 @@ object SdpCli:
     case Manifest(out: Option[String])
     case Run(dry: Boolean, fullRefresh: Boolean = false)
 
+    /** `dump-wire [--out dir]` — write the registration sequence as protobuf
+      * text format. Offline and deterministic (see `WireDump`). */
+    case DumpWire(out: Option[String])
+
   /** Everything an argv can get wrong, rendered as one readable line. The
     * caller prints the usage text after it. */
   enum CliError:
@@ -45,19 +49,28 @@ object SdpCli:
       case Nil                       => Right(Command.Usage)
       case ("--help" | "-h") :: rest => noExtras("--help", rest, Command.Usage)
       case "validate" :: rest        => noExtras("validate", rest, Command.Validate)
-      case "manifest" :: rest        => manifestArgs(rest, None)
+      case "manifest" :: rest        => outArgs("manifest", rest, None, Command.Manifest(_))
+      case "dump-wire" :: rest       => outArgs("dump-wire", rest, None, Command.DumpWire(_))
       case "run" :: rest             => runArgs(rest, dry = false, fullRefresh = false)
       case token :: _                => Left(CliError.UnknownCommand(token))
 
-  /** `manifest [--out <path> | -o <path>]` — nothing else. */
-  private def manifestArgs(args: List[String], out: Option[String]): Either[CliError, Command] =
+  /** `<command> [--out <path> | -o <path>]` — nothing else. Shared by
+    * `manifest` (a file) and `dump-wire` (a directory): both take exactly one
+    * optional destination, and a near-miss flag must be an error in both, so
+    * there is one parser rather than two that can drift. */
+  private def outArgs(
+      command: String,
+      args: List[String],
+      out: Option[String],
+      make: Option[String] => Command,
+  ): Either[CliError, Command] =
     args match
-      case Nil => Right(Command.Manifest(out))
+      case Nil => Right(make(out))
       case (flag @ ("--out" | "-o")) :: rest =>
         rest match
-          case path :: tail if !path.startsWith("-") => manifestArgs(tail, Some(path))
-          case _                                     => Left(CliError.MissingValue("manifest", flag))
-      case token :: _ => Left(CliError.UnexpectedArg("manifest", token))
+          case path :: tail if !path.startsWith("-") => outArgs(command, tail, Some(path), make)
+          case _                                     => Left(CliError.MissingValue(command, flag))
+      case token :: _ => Left(CliError.UnexpectedArg(command, token))
 
   /** `run [--dry] [--full-refresh]` — nothing else. A near-miss like
     * `--dry-run` is an error, never a silent real run; and the one combination

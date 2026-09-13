@@ -104,6 +104,13 @@ object SparkPipelinesPlugin extends AutoPlugin {
     val sdpManifest = taskKey[HashedVirtualFileRef](
       "Evaluate the pipeline object, validate the DAG, write the manifest."
     )
+    val sdpDumpWire = taskKey[Unit](
+      "Write the whole Spark Connect registration sequence to <target>/sdp/wire/*.txtpb as protobuf " +
+        "TEXT FORMAT — the same commands sdpRun/sdpDryRun send, byte-reviewable and diffable. " +
+        "Offline and deterministic (the server-assigned dataflow graph id renders as a placeholder). " +
+        "The server logs nothing about the plans it receives and the proto has no graph-readback " +
+        "command, so this plus `sdpExplain` is the whole observability story — see docs/plugin.md."
+    )
     val sdpValidate = taskKey[Unit](
       "Assemble + validate the pipeline graph and print the verdict — no file output. The offline " +
         "inner-loop target for `~sdpValidate`."
@@ -324,6 +331,41 @@ object SparkPipelinesPlugin extends AutoPlugin {
         case Left(errors)   => sys.error(ValidationRendering.invalidGraphMessage(errors.toList))
         case Right(manifest) =>
           log.info(s"sdp: pipeline valid — ${manifest.nodes.size} dataset(s), ${manifest.flows.size} flow(s).")
+    },
+
+    // The offline half of the diagnostics pair: write down what we SAY.
+    //
+    // Uncached, and not because it is a network effect (it is the opposite — a
+    // pure function of the manifest and the connection settings). A cached task
+    // must declare its outputs, and this one writes a whole DIRECTORY whose file
+    // set changes with the pipeline; declaring N outputs whose names are only
+    // known after the body ran buys nothing here, because the expensive input —
+    // `sdpManifest` — is already cached upstream. What is left is
+    // prototext rendering of a few dozen small messages, which is free. Keeping
+    // it uncached also means `sdpDumpWire` always rewrites the directory, which
+    // is what someone re-running it after an edit actually wants.
+    sdpDumpWire := Def.uncached {
+      val log  = streams.value.log
+      val conv = fileConverter.value
+      val conn = TargetResolution.base(baseConnection.value)
+      val manifest = readManifest(conv, sdpManifest.value)
+
+      val dir = (Compile / target).value.toPath.resolve("sdp").resolve("wire")
+      val dump = dev.sdp.connect.WireDump.entries(
+        manifest,
+        dev.sdp.connect.WireDump.Options(
+          defaultCatalog = conn.defaultCatalog,
+          defaultDatabase = conn.defaultDatabase,
+          storage = conn.storageRoot,
+          dry = true,
+        ),
+      )
+      val written = dev.sdp.connect.WireDump.writeTo(dir, dump)
+      log.info(
+        s"sdp: wrote ${written.size} wire command(s) to $dir — protobuf text format, the same " +
+          s"commands sdpDryRun sends (graph id = ${dev.sdp.connect.WireDump.GraphIdPlaceholder}; " +
+          "a real sdpRun differs only in StartRun.dry, which proto3 omits when false)."
+      )
     },
 
     // Dry run: register the graph server-side in validate-only mode. Target for
