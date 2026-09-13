@@ -1,7 +1,7 @@
 # Developing sbt-spark-pipelines
 
 Contributor reference: every sbt command that matters in this repo, and the workflows built on
-them. (For the plugin's *user-facing* tasks — `sdpManifest`, `sdpPush`,
+them. (For the plugin's *user-facing* tasks — `sdpManifest`, `sdpDryRun`/`sdpRun`,
 `sdpImportSchemas` — see [`plugin.md`](plugin.md).)
 
 ## Modules

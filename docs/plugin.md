@@ -43,7 +43,7 @@ write the pipeline object.
 | `sdpManifest` | task | Evaluate the pipeline object, validate the DAG, write `<target>/sdp/pipeline.sdpm` |
 | `sdpValidate` | task | Assemble + validate, print the verdict — **no file output**. The offline inner-loop target for `~sdpValidate` |
 | `sdpDryRun` | task | Register the graph server-side in validate-only mode (dry run). Target for `~sdpDryRun` |
-| `sdpPush` | task | Register the graph with the remote `PipelinesHandler`; validate (dry) or run per `sdpPushDryRun` |
+| `sdpPush` | task | **Deprecated — removed in 0.4.** Register the graph; dry or real per `sdpPushDryRun`. Use `sdpDryRun` / `sdpRun` (or the `*On` forms) instead |
 | `sdpRun` | task | Register **and execute** the graph (dry = false, always) — materializes tables; one-shot run with progress |
 | `sdpWatch` | task | Re-trigger the pipeline every `sdpWatchInterval`s (Ctrl-C to stop) — client-side "continuous": each cycle **re-evaluates your pipeline** and is a triggered run whose AvailableNow resumes from the checkpoint and picks up new data (the server has no true continuous mode) |
 | `sdpSeed` | task | Run `sdpSeedStatements` (DDL/DML) against the server over Spark Connect — a local fixture to create + populate the source/catalog tables an `externalTable` reads, so a full run resolves them |
@@ -59,7 +59,7 @@ write the pipeline object.
 | `sdpStorageRoot` | setting | Checkpoint/metadata root — absolute URI with scheme (default `file:///tmp/sdp/<project>`) |
 | `sdpDefaultCatalog` | setting | Graph default catalog sent in `CreateDataflowGraph` (`""` = omit). Send it on named V2 catalogs — omission can silently drop dependency edges |
 | `sdpDefaultDatabase` | setting | Graph default database — the dev/prod switch (see "Environments" below; `""` = omit) |
-| `sdpPushDryRun` | setting | `true` (default): `sdpPush` validates only, no flows execute; `false`: `sdpPush` really runs. (`sdpDryRun` always runs dry; `sdpRun` always runs for real.) |
+| `sdpPushDryRun` | setting | **Deprecated — removed in 0.4** with `sdpPush`. `true` (default): `sdpPush` validates only; `false`: it really runs. `sdpDryRun` / `sdpRun` do not read it |
 | `sdpVersionCheck` | setting | `true` (default): ask the server which Spark it is before registering, and refuse constructs newer than it — see "Server-version handshake" below |
 | `sdpImportSchemas` | task | Generate named-tuple schema aliases (for `cols[S]`) from the pipeline's inferred shapes + remote catalog tables |
 | `sdpSchemasFile` | setting | Output for generated aliases (default `src/main/scala/sdp/schemas/PipelineSchemas.scala` — checked in, diffs reviewable) |
@@ -75,7 +75,7 @@ write the pipeline object.
 
 ## Server-version handshake
 
-Every task that talks to a server (`sdpDryRun`, `sdpRun`, `sdpPush`, `sdpWatch`,
+Every task that talks to a server (`sdpDryRun`, `sdpRun`, `sdpWatch`,
 and `SdpApp run` off sbt) asks it one question first — a single
 `AnalyzePlan`/`SparkVersion` round trip on the same channel the registration
 uses — and logs the answer:
@@ -149,28 +149,34 @@ sbt:myPipelines> ~sdpDryRun
 validate-only mode (it never materializes tables) — catching anything only the
 live Catalyst analyzer knows (unresolvable functions, type mismatches).
 
-## What `sdpPush` does
+## What `sdpDryRun` does
 
 Reads the manifest from `sdpManifest`, then drives the registration
 sequence over gRPC: `CreateDataflowGraph` → one `DefineOutput`/`DefineFlow`
-per dataset → `StartRun`. With `sdpPushDryRun := true` (the default) the server's
-Catalyst analyzer fully resolves and validates the graph without executing
-anything:
+per dataset → `StartRun`. The run is validate-only, so the server's Catalyst
+analyzer fully resolves and validates the graph without executing anything:
 
 ```
-[info] sdp: pushing 3 dataset(s) to sc://localhost:15002 (dry=true, storage=file:///tmp/sdp/demo)
+[info] sdp: validating 3 dataset(s) on sc://localhost:15002 (build settings, dry=true, storage=file:///tmp/sdp/demo)
 [info] sdp: pipeline validated (dry run) on the server; dataflow graph id: 8b744454-...
 ```
 
 Failures are rendered by kind: an unreachable server reports as a transport
 failure; an analyzer rejection (unresolvable dataset, invalid flow type)
-reports the server's own diagnostic.
+reports the server's own diagnostic. If a later `DefineFlow` is the one that is
+rejected, the half-built graph is dropped again server-side rather than left
+behind.
+
+> **`sdpPush` is deprecated** and will be removed in **0.4**. It did the same
+> thing, dry or real depending on the separate `sdpPushDryRun` setting — a
+> spelling that makes a build script ambiguous to read. Replace `sdpPush` with
+> `sdpDryRun` or `sdpRun` (or `sdpDryRunOn <target>` / `sdpRunOn <target>`); it
+> still works for now and warns, naming its replacement.
 
 ## Running for real — `sdpRun`
 
-`sdpPush` defaults to dry (validate only). To actually materialize
-tables, use `sdpRun` (always `dry = false` — a dedicated task rather
-than flipping `sdpPushDryRun`, which avoids an sbt thin-client `set` quirk). The
+`sdpDryRun` validates only. To actually materialize tables, use `sdpRun`
+(always `dry = false` — a dedicated task rather than a boolean setting). The
 server runs a *triggered* execution: batch datasets compute once and the run
 terminates, with flow progress surfaced live:
 

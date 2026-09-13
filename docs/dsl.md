@@ -103,7 +103,8 @@ val doubled = materializedView("doubled")("SELECT id * 2 AS double_id FROM base_
 A materialized view is a batch dataset precomputed by exactly one SQL
 transformation; a temporary view is ephemeral, scoped to a single run. On the
 server these resolve fully: SQL-backed datasets are what make a pipeline pass
-`sdpPush`'s dry-run validation today, ahead of the typed transformation algebra.
+`sdpDryRun`'s server-side validation today, ahead of the typed transformation
+algebra.
 
 ### `sqlStreamingTable` — streaming table with a SQL flow
 

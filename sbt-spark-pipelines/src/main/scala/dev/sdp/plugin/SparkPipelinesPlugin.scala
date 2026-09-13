@@ -81,11 +81,12 @@ object SparkPipelinesPlugin extends AutoPlugin {
         "land here (dev_eric locally, the real schema in prod). \"\" (default) = omit."
     )
     val sdpPushDryRun = settingKey[Boolean](
-      "When true (default), sdpPush only validates server-side; no flows execute. (The dedicated " +
-        "`sdpDryRun` task always runs dry regardless of this setting; `sdpRun` always runs for real.)"
+      "DEPRECATED (removed in 0.4) along with `sdpPush`: when true (default), sdpPush only " +
+        "validates server-side; no flows execute. Use `sdpDryRun` (always dry) or `sdpRun` " +
+        "(always real) instead — neither reads this setting."
     )
     val sdpVersionCheck = settingKey[Boolean](
-      "When true (the default), sdpDryRun/sdpRun/sdpPush/sdpWatch ask the server which Spark it " +
+      "When true (the default), sdpDryRun/sdpRun/sdpWatch ask the server which Spark it " +
         "is before registering anything, and refuse a pipeline that uses constructs newer than " +
         "the server (proto3 drops unknown fields, so an old server would otherwise fail " +
         "confusingly). Set false only for a fork whose version string we read wrongly."
@@ -111,7 +112,9 @@ object SparkPipelinesPlugin extends AutoPlugin {
       "Register the graph server-side in validate-only mode (dry run) — the target for `~sdpDryRun`."
     )
     val sdpPush = taskKey[Unit](
-      "Register the SDP graph with the remote PipelinesHandler; validate (dry) or run per sdpDryRun."
+      "DEPRECATED (removed in 0.4) — a third spelling of a pair that already exists. Use " +
+        "`sdpDryRun` (always dry) or `sdpRun` (always real), or `sdpDryRunOn <target>` / " +
+        "`sdpRunOn <target>` for a named environment. Still delegates per sdpPushDryRun for now."
     )
     val sdpRun = taskKey[Unit](
       "Register and actually execute the SDP graph (dry = false) — materializes tables. One-shot run."
@@ -217,15 +220,34 @@ object SparkPipelinesPlugin extends AutoPlugin {
           (vf: HashedVirtualFileRef)
     }).value,
 
+    // DEPRECATED — scheduled for removal in 0.4.
+    //
+    // `sdpPush` + `sdpPushDryRun` is a third spelling of a pair that already
+    // exists in two better ones: `sdpDryRun`/`sdpRun` say what they do in their
+    // name, and `sdpDryRunOn`/`sdpRunOn <target>` add the environment. A task
+    // whose meaning depends on a separate boolean setting is exactly the shape
+    // that makes a build script ambiguous to read — "did this materialize
+    // tables?" should never require looking somewhere else. It still works, and
+    // still honours `sdpPushDryRun`, so nothing breaks today; it warns once per
+    // invocation and names its replacement.
+    //
     // Uncached on purpose: pushing to a remote server is a network effect,
     // not a pure function of the inputs (planning principle 3).
     sdpPush := Def.uncached {
+      val log = streams.value.log
+      val dry = sdpPushDryRun.value
+      log.warn(
+        s"sdp: `sdpPush` is deprecated and will be removed in 0.4. Use `sdpDryRun` (always dry) " +
+          s"or `sdpRun` (always real) — or `sdpDryRunOn <target>` / `sdpRunOn <target>` for a " +
+          s"named environment. Delegating to ${if dry then "sdpDryRun" else "sdpRun"} " +
+          s"(sdpPushDryRun := $dry)."
+      )
       pushOrRun(
-        log = streams.value.log,
+        log = log,
         conv = fileConverter.value,
         conn = TargetResolution.base(baseConnection.value),
         manifestRef = sdpManifest.value,
-        dry = sdpPushDryRun.value,
+        dry = dry,
         timeoutSeconds = sdpRunTimeout.value,
       )
     },
