@@ -45,7 +45,7 @@ write the pipeline object.
 | `sdpDryRun` | task | Register the graph server-side in validate-only mode (dry run). Target for `~sdpDryRun` |
 | `sdpPush` | task | Register the graph with the remote `PipelinesHandler`; validate (dry) or run per `sdpPushDryRun` |
 | `sdpRun` | task | Register **and execute** the graph (dry = false, always) — materializes tables; one-shot run with progress |
-| `sdpWatch` | task | Re-trigger the pipeline every `sdpWatchInterval`s (Ctrl-C to stop) — client-side "continuous": each cycle is a triggered run whose AvailableNow resumes from the checkpoint and picks up new data (the server has no true continuous mode) |
+| `sdpWatch` | task | Re-trigger the pipeline every `sdpWatchInterval`s (Ctrl-C to stop) — client-side "continuous": each cycle **re-evaluates your pipeline** and is a triggered run whose AvailableNow resumes from the checkpoint and picks up new data (the server has no true continuous mode) |
 | `sdpSeed` | task | Run `sdpSeedStatements` (DDL/DML) against the server over Spark Connect — a local fixture to create + populate the source/catalog tables an `externalTable` reads, so a full run resolves them |
 | `sdpTargets` | setting | Named environments as typed `SdpTarget` values (`Map[String, SdpTarget]`, default empty) — see [environments.md](environments.md) |
 | `sdpRunOn <target>` | input task | `sdpRun` against a named environment from `sdpTargets` (tab-completes the names) |
@@ -196,6 +196,34 @@ build, rather than blocking forever. File/CSV/JSON streaming sources work
 natively — declare `.schema("id BIGINT, v STRING")` and it's emitted to the
 server (the raw DDL, verbatim, so `DECIMAL`/`ARRAY`/`STRUCT` survive intact);
 Delta and `rate` self-describe and need no schema.
+
+## Watching — `sdpWatch`
+
+`sdpWatch` re-triggers the pipeline every `sdpWatchInterval` seconds (default
+30) until you press Ctrl-C. The server has no continuous execution mode, so a
+"watch" is client-side periodic re-triggering: each cycle is an ordinary
+`sdpRun`, and `Trigger.AvailableNow` means a streaming flow resumes from its
+checkpoint and processes whatever arrived since.
+
+Two properties worth knowing:
+
+- **Every cycle re-evaluates your pipeline.** The classload-eval and validation
+  re-run before each trigger, so an edit you make (and compile) while a watch is
+  running is picked up by the *next* cycle — you are never watching stale code.
+  Each cycle logs the shape it is about to run:
+
+  ```
+  [info] sdp: cycle — 4 dataset(s), 4 flow(s)
+  ```
+
+  A broken edit ends the watch with the same validation message `sdpValidate`
+  would have printed, rather than quietly continuing on the old graph.
+- **One wedged cycle cannot wedge the watch.** Cycles are bounded by
+  `sdpRunTimeout` exactly as `sdpRun` is: an unbounded streaming source detaches
+  (the server keeps going) and the watch moves on to the next cycle.
+
+Each cycle registers a *fresh* dataflow graph, which is right for a dev loop but
+does accumulate graph metadata server-side over a very long watch.
 
 Any Spark Connect server with the SDP surface (Spark 4.1+) is enough to
 materialize real tables locally — e.g. an `apache/spark:4.1.1` container started

@@ -280,13 +280,19 @@ object SparkPipelinesPlugin extends AutoPlugin {
       )
     },
 
+    // NOT `sdpManifest.value`: a watch that resolved the manifest once would
+    // keep re-triggering the pipeline the author had when they pressed enter,
+    // silently ignoring every edit since. It takes the same two inputs the
+    // classload-eval needs and re-runs it EVERY cycle instead — see watchLoop.
     sdpWatch := Def.uncached {
+      val conv = fileConverter.value
       watchLoop(
         log = streams.value.log,
-        conv = fileConverter.value,
+        fqn = sdpPipelineClass.value,
+        classpath = (Runtime / fullClasspath).value.toList.map(entry => conv.toPath(entry.data)),
         conn = TargetResolution.base(baseConnection.value),
-        manifestRef = sdpManifest.value,
         intervalSeconds = sdpWatchInterval.value,
+        timeoutSeconds = sdpRunTimeout.value,
       )
     },
 
@@ -631,43 +637,13 @@ object SparkPipelinesPlugin extends AutoPlugin {
   ): Unit =
     val manifest = readManifest(conv, manifestRef)
 
-    val (host, port) = parseEndpoint(conn.endpoint)
-    val verb         = if dry then "validating" else "running"
+    val verb = if dry then "validating" else "running"
     log.info(
       s"sdp: $verb ${manifest.nodes.size} dataset(s) on ${conn.endpoint} " +
         s"(${conn.origin}, dry=$dry, storage=${conn.storageRoot})"
     )
 
-    // Register (eager → graphId), then consume the run as a ZStream: each
-    // event is logged live as it arrives (`.tap` — the same hook a future DAG
-    // view renders from). Bound it by racing the drain against a timer that
-    // force-closes the channel (`handle.cancel`): on a never-terminating run
-    // the cancel unblocks the parked gRPC pull so the loser interrupts cleanly
-    // (a plain `.timeout` would deadlock waiting on the parked `next()`).
-    val effect = zio.ZIO.scoped {
-      PipelinesRegistration
-        .register(
-          host,
-          port,
-          manifest,
-          conn.storageRoot,
-          dry,
-          defaultCatalog = conn.defaultCatalog,
-          defaultDatabase = conn.defaultDatabase,
-          transport = conn.transport,
-          versionCheck = conn.versionCheck,
-        )
-        .flatMap { handle =>
-        val drain = handle.progress
-          .tap(p => zio.ZIO.succeed(log.info(s"sdp:   • ${p.raw}")))
-          .runDrain
-          .as(true)
-        val detach = zio.ZIO.sleep(zio.Duration.fromSeconds(timeoutSeconds.toLong)) *> handle.cancel.as(false)
-        drain.raceFirst(detach).map(completed => (handle.graphId, completed))
-      }
-    }
-
-    SdpZioBridge.run(effect) match
+    SdpZioBridge.run(registerAndDrain(log, conn, manifest, dry, timeoutSeconds)) match
       case Left(err) =>
         // Name the endpoint AND its provenance: with several targets in play,
         // "which environment did this fail against?" is the first question, and
@@ -686,54 +662,146 @@ object SparkPipelinesPlugin extends AutoPlugin {
         val mode = if dry then "validated (dry run)" else "executed"
         log.info(s"sdp: pipeline $mode on the server; dataflow graph id: $graphId")
 
-  /** Periodic re-trigger ("watch") — the server has no continuous execution, so
-    * this re-issues a *triggered* run every `intervalSeconds`; each AvailableNow
-    * cycle resumes from the checkpoint and processes newly-arrived data. Runs
-    * until interrupted (Ctrl-C). A per-cycle failure stops the loop (`.repeat`
-    * only continues on success). Each cycle registers a fresh graph — fine for
-    * a dev loop, though long watches accumulate server-side graph metadata. */
-  private def watchLoop(
+  /** THE registration-and-drain effect, shared by [[pushOrRun]] and every
+    * [[watchLoop]] cycle (E's one-body rule, extended rather than re-forked).
+    *
+    * Register (eager → graphId), then consume the run as a ZStream: each event
+    * is logged live as it arrives (`.tap` — the same hook a future DAG view
+    * renders from). Bound it by racing the drain against a timer that
+    * force-closes the channel (`handle.cancel`): on a never-terminating run the
+    * cancel unblocks the parked gRPC pull so the loser interrupts cleanly (a
+    * plain `.timeout` would deadlock waiting on the parked `next()`).
+    *
+    * @return (graph id, whether the run finished before the timeout)
+    */
+  private def registerAndDrain(
       log: sbt.util.Logger,
-      conv: xsbti.FileConverter,
       conn: ResolvedConnection,
-      manifestRef: HashedVirtualFileRef,
-      intervalSeconds: Int,
-  ): Unit =
-    val manifest = readManifest(conv, manifestRef)
-
+      manifest: dev.sdp.core.PipelineManifest,
+      dry: Boolean,
+      timeoutSeconds: Int,
+  ): zio.IO[PipelinesRegistration.RegistrationError, (String, Boolean)] =
     val (host, port) = parseEndpoint(conn.endpoint)
-    log.info(
-      s"sdp: watching ${manifest.nodes.size} dataset(s) on ${conn.endpoint} (${conn.origin}) — " +
-        s"re-triggering every ${intervalSeconds}s (Ctrl-C to stop)"
-    )
-
-    val cycle = zio.ZIO.scoped {
+    zio.ZIO.scoped {
       PipelinesRegistration
         .register(
           host,
           port,
           manifest,
           conn.storageRoot,
-          dry = false,
+          dry,
           defaultCatalog = conn.defaultCatalog,
           defaultDatabase = conn.defaultDatabase,
           transport = conn.transport,
           versionCheck = conn.versionCheck,
         )
         .flatMap { handle =>
-        handle.progress
-          .tap(p => zio.ZIO.succeed(log.info(s"sdp:   • ${p.raw}")))
-          .runDrain
-          .as(handle.graphId)
+          val drain = handle.progress
+            .tap(p => zio.ZIO.succeed(log.info(s"sdp:   • ${p.raw}")))
+            .runDrain
+            .as(true)
+          val detach =
+            zio.ZIO.sleep(zio.Duration.fromSeconds(timeoutSeconds.toLong)) *> handle.cancel.as(false)
+          drain.raceFirst(detach).map(completed => (handle.graphId, completed))
+        }
+    }
+
+  /** Evaluate the pipeline object and assemble its manifest, as an EFFECT.
+    *
+    * Deliberately NOT `SdpZioBridge.assemble`: a watch cycle is already running
+    * inside an isolated runtime, and nesting a second one inside a fiber would
+    * block one of its threads on a whole other scheduler. The error channel is
+    * the rendered message, because at this point there is nothing left to
+    * decide — the author reads it and fixes their code.
+    */
+  private def evaluateManifest(
+      fqn: String,
+      classpath: List[Path],
+      log: sbt.util.Logger,
+  ): zio.IO[String, dev.sdp.core.PipelineManifest] =
+    zio.ZIO
+      // Blocking: classload-eval reads jars off disk and runs user code.
+      .attemptBlocking(evalPipelineFragments(fqn, classpath, log))
+      .mapError(t => Option(t.getMessage).getOrElse(t.toString))
+      .flatMap { fragments =>
+        dev.sdp.app.ManifestAssembly
+          .assemble(fragments)
+          .provide(dev.sdp.app.ManifestAssembly.live, dev.sdp.app.GraphValidation.live)
+          .mapError(errors => ValidationRendering.invalidGraphMessage(errors.toList))
       }
-    }.tap(gid => zio.ZIO.succeed(log.info(s"sdp: cycle complete ($gid) — next in ${intervalSeconds}s")))
 
-    // repeat forever on a fixed spacing; only an error (or Ctrl-C) ends it
-    val loop = cycle.repeat(zio.Schedule.spaced(zio.Duration.fromSeconds(intervalSeconds.toLong))).unit
+  /** The watch loop's SHAPE, independent of what a cycle does: evaluate, run,
+    * space, repeat. Separated so the property that matters — that `evaluate`
+    * runs once per cycle and not once per watch — is unit-testable without a
+    * classpath or a server (`SdpWatchSpec`).
+    *
+    * `evaluate` is a by-name-ish ZIO value and therefore re-run on every
+    * repetition; that single fact IS the fix. `.repeat` only continues on
+    * success, so any cycle failure (a broken edit as much as a rejected
+    * registration) ends the watch with its message.
+    */
+  private[plugin] def watchEffect[A](
+      evaluate: zio.IO[String, A],
+      cycle: A => zio.IO[String, Unit],
+      intervalSeconds: Int,
+  ): zio.IO[String, Unit] =
+    evaluate
+      .flatMap(cycle)
+      .repeat(zio.Schedule.spaced(zio.Duration.fromSeconds(intervalSeconds.toLong)))
+      .unit
 
-    SdpZioBridge.run(loop) match
-      case Left(err) => sys.error(s"sdp: watch failed on ${conn.endpoint} (${conn.origin}) — ${err.describe}")
-      case Right(_)  => () // unreachable under spaced(); Ctrl-C interrupts instead
+  /** Periodic re-trigger ("watch") — the server has no continuous execution, so
+    * this re-issues a *triggered* run every `intervalSeconds`; each AvailableNow
+    * cycle resumes from the checkpoint and processes newly-arrived data. Runs
+    * until interrupted (Ctrl-C). Each cycle registers a fresh graph — fine for
+    * a dev loop, though long watches accumulate server-side graph metadata.
+    *
+    * Two things a watch owes the author, added in P3.2:
+    *
+    *   - **it re-evaluates the pipeline every cycle.** The manifest used to be
+    *     resolved once, at task start, so every edit made during a long watch
+    *     was silently ignored and the author watched stale code run. Now each
+    *     cycle re-runs the classload-eval (loader per cycle, `close()`d — the
+    *     existing hygiene) and re-assembles, so the next trigger is the code
+    *     that is on disk. Costs ~2.6s per cycle, the measured inner loop.
+    *   - **a wedged cycle cannot wedge the watch.** Cycles share `pushOrRun`'s
+    *     drain-vs-detach race, so an unbounded streaming source detaches after
+    *     `sdpRunTimeout` and the watch moves on instead of blocking forever.
+    */
+  private def watchLoop(
+      log: sbt.util.Logger,
+      fqn: String,
+      classpath: List[Path],
+      conn: ResolvedConnection,
+      intervalSeconds: Int,
+      timeoutSeconds: Int,
+  ): Unit =
+    log.info(
+      s"sdp: watching ${conn.endpoint} (${conn.origin}) — re-evaluating $fqn and re-triggering " +
+        s"every ${intervalSeconds}s (Ctrl-C to stop)"
+    )
+
+    val runCycle: dev.sdp.core.PipelineManifest => zio.IO[String, Unit] = manifest =>
+      zio.ZIO.succeed(
+        log.info(s"sdp: cycle — ${manifest.nodes.size} dataset(s), ${manifest.flows.size} flow(s)")
+      ) *>
+        registerAndDrain(log, conn, manifest, dry = false, timeoutSeconds)
+          .mapError(err => s"run failed on ${conn.endpoint} (${conn.origin}) — ${err.describe}")
+          .map {
+            case (graphId, true) =>
+              log.info(s"sdp: cycle complete ($graphId) — next in ${intervalSeconds}s")
+            case (graphId, false) =>
+              log.warn(
+                s"sdp: cycle still running after ${timeoutSeconds}s — detached ($graphId); the " +
+                  s"server keeps going. Next cycle in ${intervalSeconds}s."
+              )
+          }
+
+    SdpZioBridge.run(
+      watchEffect(evaluateManifest(fqn, classpath, log), runCycle, intervalSeconds)
+    ) match
+      case Left(message) => sys.error(s"sdp: watch stopped — $message")
+      case Right(_)      => () // unreachable under spaced(); Ctrl-C interrupts instead
 
   /** THE shared body for `sdpSeed` and `sdpSeedOn` — fixture SQL against the
     * server described by `conn`. Same one-value-in shape as [[pushOrRun]]. */
